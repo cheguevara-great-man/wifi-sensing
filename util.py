@@ -116,8 +116,25 @@ def load_data_n_model(dataset_name, model_name, root):
     elif dataset_name == 'NTU-Fi_HAR':
         print('using dataset: NTU-Fi_HAR')
         num_classes = classes['NTU-Fi_HAR']
-        train_loader = torch.utils.data.DataLoader(dataset=CSI_Dataset(root + 'NTU-Fi_HAR/train_amp/'), batch_size=64, shuffle=True)
-        test_loader = torch.utils.data.DataLoader(dataset=CSI_Dataset(root + 'NTU-Fi_HAR/test_amp/'), batch_size=64, shuffle=False)
+        #train_loader = torch.utils.data.DataLoader(dataset=CSI_Dataset(root + 'NTU-Fi_HAR/train_amp/'), batch_size=64, shuffle=True)
+        NUM_WORKERS = 16  # 你可以尝试 4, 8, 16 等
+        train_loader = torch.utils.data.DataLoader(
+            dataset=CSI_Dataset(root + 'NTU-Fi_HAR/train_amp/'),  # 别忘了使用你修正后的数据路径！
+            batch_size=64,
+            shuffle=True,
+            num_workers=NUM_WORKERS,
+            pin_memory=True,  # 如果你的数据可以完全放入内存，这个选项可以加速到GPU的传输
+            #persistent_workers=True  # 如果PyTorch版本>=1.8，建议开启，可以避免每个epoch都重建worker进程
+        )
+        test_loader = torch.utils.data.DataLoader(
+            dataset=CSI_Dataset(root + 'NTU-Fi_HAR/test_amp/'),  # 别忘了使用你修正后的数据路径！
+            batch_size=64,
+            shuffle=False,
+            num_workers=NUM_WORKERS,
+            pin_memory=True,
+            #persistent_workers=True
+        )
+        #test_loader = torch.utils.data.DataLoader(dataset=CSI_Dataset(root + 'NTU-Fi_HAR/test_amp/'), batch_size=64, shuffle=False)
         if model_name == 'MLP':
             print("using model: MLP")
             model = NTU_Fi_MLP(num_classes)
