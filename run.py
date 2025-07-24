@@ -62,7 +62,7 @@ def test(model, tensor_loader, criterion, device):
 def main():
     #root = './Data/'
     #root='../data/sense-fi/'
-    root = '../datasets/'
+    root = '../datasets/sense-fi/'
     parser = argparse.ArgumentParser('WiFi Imaging Benchmark')
     parser.add_argument('--dataset', choices = ['UT_HAR_data','NTU-Fi-HumanID','NTU-Fi_HAR','Widar'])
     parser.add_argument('--model', choices = ['MLP','LeNet','ResNet18','ResNet50','ResNet101','RNN','GRU','LSTM','BiLSTM', 'CNN+GRU','ViT'])
