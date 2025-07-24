@@ -3,97 +3,180 @@ import torch
 import torch.nn as nn
 import argparse
 from util import load_data_n_model
-import time  # ✅ 加这个
-def train(model, tensor_loader, num_epochs, learning_rate, criterion, device):
-    model = model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr = learning_rate)
-    for epoch in range(num_epochs):
-        model.train()
-        epoch_loss = 0
-        epoch_accuracy = 0
-        for data in tensor_loader:
-            inputs,labels = data
-            inputs = inputs.to(device)
-            labels = labels.to(device)
-            labels = labels.type(torch.LongTensor)
-            
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            outputs = outputs.to(device)
-            outputs = outputs.type(torch.FloatTensor)
-            loss = criterion(outputs,labels)
-            loss.backward()
-            optimizer.step()
-            
-            epoch_loss += loss.item() * inputs.size(0)
-            predict_y = torch.argmax(outputs,dim=1).to(device)
-            epoch_accuracy += (predict_y == labels.to(device)).sum().item() / labels.size(0)
-        epoch_loss = epoch_loss/len(tensor_loader.dataset)
-        epoch_accuracy = epoch_accuracy/len(tensor_loader)
-        print('Epoch:{}, Accuracy:{:.4f},Loss:{:.9f}'.format(epoch+1, float(epoch_accuracy),float(epoch_loss)))
-    return
+import time
+import os  # 引入 os 模块
+import csv # 1. 引入 csv 模块
 
+# train_one_epoch 和 test_one_epoch 函数与上一个回答中的版本相同
+# 这里为了完整性再次包含它们
 
-def test(model, tensor_loader, criterion, device):
-    model.eval()
-    test_acc = 0
-    test_loss = 0
+def train_one_epoch(model, tensor_loader, criterion, device, optimizer):
+    model.train()
+    epoch_loss = 0
+    epoch_accuracy = 0
+    num_samples = 0
+
     for data in tensor_loader:
         inputs, labels = data
         inputs = inputs.to(device)
-        labels.to(device)
+        labels = labels.to(device)
         labels = labels.type(torch.LongTensor)
-        
-        outputs = model(inputs)
-        outputs = outputs.type(torch.FloatTensor)
-        outputs.to(device)
-        
-        loss = criterion(outputs,labels)
-        predict_y = torch.argmax(outputs,dim=1).to(device)
-        accuracy = (predict_y == labels.to(device)).sum().item() / labels.size(0)
-        test_acc += accuracy
-        test_loss += loss.item() * inputs.size(0)
-    test_acc = test_acc/len(tensor_loader)
-    test_loss = test_loss/len(tensor_loader.dataset)
-    print("validation accuracy:{:.4f}, loss:{:.5f}".format(float(test_acc),float(test_loss)))
-    return
 
-    
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        outputs = outputs.to(device)
+        outputs = outputs.type(torch.FloatTensor)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        epoch_loss += loss.item() * inputs.size(0)
+        predict_y = torch.argmax(outputs, dim=1)
+        epoch_accuracy += (predict_y == labels).sum().item()
+        num_samples += labels.size(0)
+
+    epoch_loss = epoch_loss / num_samples
+    epoch_accuracy = epoch_accuracy / num_samples
+    return epoch_loss, epoch_accuracy
+
+
+def test_one_epoch(model, tensor_loader, criterion, device):
+    model.eval()
+    test_acc = 0.0
+    test_loss = 0.0
+    num_samples = 0
+
+    with torch.no_grad():
+        for data in tensor_loader:
+            inputs, labels = data
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            labels = labels.type(torch.LongTensor)
+
+            outputs = model(inputs)
+            outputs = outputs.type(torch.FloatTensor)
+            outputs.to(device)
+            loss = criterion(outputs, labels)
+
+            predict_y = torch.argmax(outputs, dim=1).to(device)
+            accuracy = (predict_y == labels.to(device)).sum().item() / labels.size(0)
+            test_acc += accuracy
+            test_loss += loss.item() * inputs.size(0)
+
+    test_acc = test_acc / num_samples
+    test_loss = test_loss / num_samples
+    return test_loss, test_acc
+
+
+def save_metrics_to_csv(filepath, history):
+    """
+    将性能历史记录（一个字典列表）保存到CSV文件。
+    Args:
+        filepath (str): CSV文件的完整路径。
+        history (list of dict): 包含 'epoch', 'loss', 'accuracy' 的字典列表。
+    """
+    if not history:
+        return
+
+    # 使用 'w' 模式打开文件，newline='' 是csv模块的推荐做法
+    with open(filepath, 'w', newline='') as f:
+        # 定义CSV文件的列名，与history字典中的键对应
+        fieldnames = ['epoch', 'loss', 'accuracy']
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+        # 写入表头
+        writer.writeheader()
+        # 写入所有行数据
+        writer.writerows(history)
+
 def main():
-    #root = './Data/'
-    #root='../data/sense-fi/'
     root = '../datasets/sense-fi/'
+    if not os.path.isdir(root):
+        print(f"错误: 数据集根目录 '{root}' 未找到。")
+        print("请确认您的脚本（run.py）是否在 'code/sense-fi/' 文件夹下，")
+        print("并且 'datasets' 文件夹在 'code/' 的上一级目录。")
+        return
     parser = argparse.ArgumentParser('WiFi Imaging Benchmark')
     parser.add_argument('--dataset', choices = ['UT_HAR_data','NTU-Fi-HumanID','NTU-Fi_HAR','Widar'])
     parser.add_argument('--model', choices = ['MLP','LeNet','ResNet18','ResNet50','ResNet101','RNN','GRU','LSTM','BiLSTM', 'CNN+GRU','ViT'])
+    # 新增的参数，用于自定义实验名称，并设为必填项
+    parser.add_argument('--exp_name', required=True, type=str, help='自定义实验名称，将用于创建模型保存目录。')
     args = parser.parse_args()
 
     train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root)
     criterion = nn.CrossEntropyLoss()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    train_start = time.time()
-    train(
-        model=model,
-        tensor_loader= train_loader,
-        num_epochs= train_epoch,
-        learning_rate=1e-3,
-        criterion=criterion,
-        device=device
-         )
-    train_end = time.time()
-    print(f"⏱️ 训练耗时：{train_end - train_start:.2f} 秒")
-    test_start = time.time()
-    test(
-        model=model,
-        tensor_loader=test_loader,
-        criterion=criterion,
-        device= device
-        )
-    test_end = time.time()
-    print(f"⏱️ 测试耗时：{test_end - test_start:.2f} 秒")
-    return
 
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    # ==================== 新增：等间隔保存逻辑 ====================
+    # ==================== 3. 构建新的动态保存目录 ====================
+    # 按照您的要求构建路径: root/数据集/Model Parameters/自定义字符串/模型/
+    save_dir = os.path.join(root, args.dataset, 'Model Parameters', args.exp_name, args.model)
+    os.makedirs(save_dir, exist_ok=True)
+
+    # ==================== 3. 新增：性能指标（Metrics）保存目录 ====================
+    metrics_save_dir = os.path.join(root, args.dataset, 'Metrics', args.exp_name, args.model)
+    os.makedirs(metrics_save_dir, exist_ok=True)
+    print(f"📊 性能指标将保存至: {os.path.abspath(metrics_save_dir)}")
+    # ======================================================================
+
+    # ================================================================
+    # 2. 计算保存间隔和保存点
+    num_saves = 10
+    if train_epoch < num_saves:
+        # 如果总epoch数小于10，则每个epoch都保存
+        save_interval = 1
+    else:
+        save_interval = train_epoch // num_saves
+
+    # 创建一个包含所有需要保存的epoch编号的集合，方便快速查找
+    save_epochs = set(range(save_interval, train_epoch + 1, save_interval))
+    # 确保最后一个epoch总是被保存
+    save_epochs.add(train_epoch)
+    print(f"模型将会在以下Epoch结束时保存: {sorted(list(save_epochs))}")
+    # ==========================================================
+
+    # ==================== 4. 新增：初始化历史记录列表 ====================
+    train_history = []
+    test_history = []
+
+    # --- 训练主循环 ---
+    total_train_start = time.time()
+    for epoch in range(1, train_epoch + 1):  # 循环从1开始，方便与epoch编号对应
+        print(f"--- Epoch {epoch}/{train_epoch} ---")
+
+        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, device, optimizer)
+        print(f"Train -> Loss: {train_loss:.5f}, Accuracy: {train_acc:.4f}")
+
+        test_loss, test_acc = test_one_epoch(model, test_loader, criterion, device)
+        print(f"Test/Validation -> Loss: {test_loss:.5f}, Accuracy: {test_acc:.4f}")
+
+        # ==================== 5. 新增：收集当前epoch的数据 ====================
+        train_history.append({'epoch': epoch, 'loss': train_loss, 'accuracy': train_acc})
+        test_history.append({'epoch': epoch, 'loss': test_loss, 'accuracy': test_acc})
+
+        # --- 检查是否到达保存点 ---
+        if epoch in save_epochs:
+            model_save_path = os.path.join(save_dir, f'model_epoch_{epoch}.pth')
+            print(f"💾 到达保存点，正在保存模型到: {model_save_path}")
+            torch.save(model.state_dict(), model_save_path)
+
+    total_train_end = time.time()
+    print("\n--- 训练完成 ---")
+    print(f"⏱️ 总训练耗时：{total_train_end - total_train_start:.2f} 秒")
+    print(f"💾 所有检查点已保存在目录: {save_dir}")
+
+    # ==================== 6. 新增：在训练结束后，调用函数保存CSV文件 ====================
+    train_metrics_path = os.path.join(metrics_save_dir, 'train_metrics.csv')
+    test_metrics_path = os.path.join(metrics_save_dir, 'test_metrics.csv')
+
+    print(f"📊 正在保存训练历史到: {train_metrics_path}")
+    save_metrics_to_csv(train_metrics_path, train_history)
+
+    print(f"📊 正在保存测试历史到: {test_metrics_path}")
+    save_metrics_to_csv(test_metrics_path, test_history)
 
 if __name__ == "__main__":
     main()
