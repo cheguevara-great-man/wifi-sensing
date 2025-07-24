@@ -58,14 +58,13 @@ def test_one_epoch(model, tensor_loader, criterion, device):
             outputs.to(device)
             loss = criterion(outputs, labels)
 
-            predict_y = torch.argmax(outputs, dim=1).to(device)
-            accuracy = (predict_y == labels.to(device)).sum().item() / labels.size(0)
-            test_acc += accuracy
+            predict_y = torch.argmax(outputs, dim=1)
+            test_acc += (predict_y == labels).sum().item()
             test_loss += loss.item() * inputs.size(0)
-
-    test_acc = test_acc / num_samples
-    test_loss = test_loss / num_samples
-    return test_loss, test_acc
+            num_samples += labels.size(0)
+        test_acc = test_acc / num_samples
+        test_loss = test_loss / num_samples
+        return test_loss, test_acc
 
 
 def save_metrics_to_csv(filepath, history):
