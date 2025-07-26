@@ -7,6 +7,20 @@ import time
 import os  # 引入 os 模块
 import csv # 1. 引入 csv 模块
 
+# ==================== 解决 num_workers 和 numpy 的冲突 ====================
+# 明确控制 OpenBLAS 的线程数，这是你当前NumPy的主要后端
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+# OpenBLAS 内部使用 OpenMP，所以这个也很重要
+os.environ['OMP_NUM_THREADS'] = '1'
+# 由于你的numpy没有链接MKL，这两个变量可以不设，但设了也无害，可以保留以防万一未来更改环境
+os.environ['MKL_NUM_THREADS'] = '1'
+# 这个通常是macOS特有的，Linux服务器基本用不到，但保留无害
+os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
+# 如果你确定不使用BLIS，这个可以不设，保留也无害
+os.environ['BLIS_NUM_THREADS'] = '1'
+# =========================================================================
+
+
 # train_one_epoch 和 test_one_epoch 函数与上一个回答中的版本相同
 # 这里为了完整性再次包含它们
 
@@ -100,9 +114,10 @@ def main():
     parser.add_argument('--model', choices = ['MLP','LeNet','ResNet18','ResNet50','ResNet101','RNN','GRU','LSTM','BiLSTM', 'CNN+GRU','ViT'])
     # 新增的参数，用于自定义实验名称，并设为必填项
     parser.add_argument('--exp_name', required=True, type=str, help='自定义实验名称，将用于创建模型保存目录。')
+    parser.add_argument('--sample_rate', type=float, default=1.0, help='二次降采样的比例 (0.05到1.0)，对应25Hz到500Hz。默认为1.0，即不进行二次采样。')
     args = parser.parse_args()
 
-    train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root)
+    train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root,args.sample_rate)
     criterion = nn.CrossEntropyLoss()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
