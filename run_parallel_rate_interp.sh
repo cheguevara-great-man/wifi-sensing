@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-## nohup ./run_parallel_rate_interp.sh > ultimate_run.log 2>&1 &
+## nohup ./run_parallel_rate_interp.sh > rate_interp_run.log 2>&1 &
 #####################################################################
 # run_grid_search.sh
 # 终极版并行脚本，用于大规模网格搜索实验。
@@ -12,7 +12,7 @@
 PYTHON_SCRIPT="run.py"
 DATASET_NAME="NTU-Fi_HAR"
 # 2. 可用GPU
-GPU_LIST=(0 1 2 3)
+GPU_LIST=(0 1 2 3 4)
 # 3. 基础实验名称 (将作为所有子实验目录的前缀)
 BASE_EXP_NAME="energy_rate_interp_$(date +%Y%m%d_%H%M)"
 

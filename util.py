@@ -117,7 +117,7 @@ def load_data_n_model(dataset_name, model_name, root,sample_rate=1.0,interpolati
         print('using dataset: NTU-Fi_HAR')
         num_classes = classes['NTU-Fi_HAR']
         #train_loader = torch.utils.data.DataLoader(dataset=CSI_Dataset(root + 'NTU-Fi_HAR/train_amp/'), batch_size=64, shuffle=True)
-        NUM_WORKERS = 16  # 你可以尝试 4, 8, 16 等
+        NUM_WORKERS = 1  # 你可以尝试 4, 8, 16 等
         train_loader = torch.utils.data.DataLoader(
             dataset=CSI_Dataset(root + 'NTU-Fi_HAR/train_amp/',sample_rate=sample_rate ,interpolation_method=interpolation_method ),  # 别忘了使用你修正后的数据路径！
             batch_size=64,
