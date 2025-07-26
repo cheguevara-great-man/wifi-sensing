@@ -1,3 +1,4 @@
+#重新划分NTU-Fi两个数据集的训练集和测试集
 '''import os
 import shutil
 import glob

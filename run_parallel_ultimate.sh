@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 
 #####################################################################
+#运行
+#先确认EXP_NAME是否正确，GPU是否空闲，代码是否正确
+# nohup ./run_parallel_ultimate.sh > ultimate_run.log 2>&1 &
 # run_parallel_ultimate.sh
 # 在多张GPU上并行运行多个异构模型训练任务。
 # 采用“资源需求感知”的动态调度策略，无固定并发上限，
@@ -16,7 +19,7 @@ DATASET_NAME="NTU-Fi_HAR"
 # 3. 可用的GPU设备ID列表
 GPU_LIST=(0 1 2 3)
 # 4. 自定义实验名称
-EXP_NAME="amp_500hz_baseline_$(date +%Y%m%d_%H%M)"
+EXP_NAME="energy_500hz_baseline_$(date +%Y%m%d_%H%M)"
 
 # 5. 【重要】模型显存需求表 (单位: MiB) - 已根据您提供的数据更新
 #    安全起见，在您的测试值基础上增加了约10%的缓冲。

@@ -1,9 +1,10 @@
+USE_ENERGY_INPUT = True  # 设置为 True 使用能量，设置为 False 使用幅度 在 CSI_Dataset 中
+
 import numpy as np
 import glob
 import scipy.io as sio
 import torch
 from torch.utils.data import Dataset, DataLoader
-
 
 def UT_HAR_dataset(root_dir):
     data_list = glob.glob(root_dir+'/UT_HAR/data/*.csv')
@@ -79,14 +80,17 @@ class CSI_Dataset(Dataset):
         sample_dir = self.data_list[idx]
         y = self.category[sample_dir.split('/')[-2]]
         x = sio.loadmat(sample_dir)[self.modal]
+        x = x[:, ::4]
+        if USE_ENERGY_INPUT:
+            x = np.square(x)
+            x = (x - 1815.7732) / 396.1198
+        else:
+            x = (x - 42.3199) / 4.9802
 
-        # normalize
-        x = (x - 42.3199)/4.9802
 
-        # sampling: 2000 -> 500
-        x = x[:,::4]
+        #先降采样再升采样
+
         x = x.reshape(3, 114, 500)
-
         if self.transform:
             x = self.transform(x)
 

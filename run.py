@@ -157,15 +157,15 @@ def main():
         test_history.append({'epoch': epoch, 'loss': test_loss, 'accuracy': test_acc})
 
         # --- 检查是否到达保存点 ---
-        if epoch in save_epochs:
+        '''if epoch in save_epochs:
             model_save_path = os.path.join(save_dir, f'model_epoch_{epoch}.pth')
             print(f"💾 到达保存点，正在保存模型到: {model_save_path}")
-            torch.save(model.state_dict(), model_save_path)
+            torch.save(model.state_dict(), model_save_path)'''
 
     total_train_end = time.time()
     print("\n--- 训练完成 ---")
     print(f"⏱️ 总训练耗时：{total_train_end - total_train_start:.2f} 秒")
-    print(f"💾 所有检查点已保存在目录: {save_dir}")
+    #print(f"💾 所有检查点已保存在目录: {save_dir}")
 
     # ==================== 6. 新增：在训练结束后，调用函数保存CSV文件 ====================
     train_metrics_path = os.path.join(metrics_save_dir, 'train_metrics.csv')
