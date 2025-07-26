@@ -113,9 +113,12 @@ def main():
     parser.add_argument('--dataset', choices = ['UT_HAR_data','NTU-Fi-HumanID','NTU-Fi_HAR','Widar'])
     parser.add_argument('--model', choices = ['MLP','LeNet','ResNet18','ResNet50','ResNet101','RNN','GRU','LSTM','BiLSTM', 'CNN+GRU','ViT'])
     # 新增的参数，用于自定义实验名称，并设为必填项
-    parser.add_argument('--exp_name', required=True, type=str, help='自定义实验名称，将用于创建模型保存目录。')
+    #parser.add_argument('--exp_name', required=True, type=str, help='自定义实验名称，将用于创建模型保存目录。')
     parser.add_argument('--sample_rate', type=float, default=1.0, help='二次降采样的比例 (0.05到1.0)，对应25Hz到500Hz。默认为1.0，即不进行二次采样。')
     parser.add_argument('--interpolation', type=str,default='linear',choices=['linear', 'cubic', 'nearest', 'idw', 'rbf'],help='升采样时使用的插值方法。默认为 "linear"。')
+    # 新增两个参数，用于接收完整的保存目录
+    parser.add_argument('--model_save_dir', required=True, type=str, help='模型检查点的完整保存目录。')
+    parser.add_argument('--metrics_save_dir', required=True, type=str, help='性能指标文件的完整保存目录。')
     args = parser.parse_args()
 
     train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root,args.sample_rate,args.interpolation)
@@ -125,18 +128,13 @@ def main():
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    # ==================== 新增：等间隔保存逻辑 ====================
-    # ==================== 3. 构建新的动态保存目录 ====================
-    # 按照您的要求构建路径: root/数据集/Model Parameters/自定义字符串/模型/
-    save_dir = os.path.join(root, args.dataset, 'Model Parameters', args.exp_name, args.model)
-    os.makedirs(save_dir, exist_ok=True)
 
-    # ==================== 3. 新增：性能指标（Metrics）保存目录 ====================
-    metrics_save_dir = os.path.join(root, args.dataset, 'Metrics', args.exp_name, args.model)
-    os.makedirs(metrics_save_dir, exist_ok=True)
-    print(f"📊 性能指标将保存至: {os.path.abspath(metrics_save_dir)}")
-    # ======================================================================
-
+    # --- 目录创建 ---
+    # 现在 run.py 只负责确保目录存在，不再构建它
+    os.makedirs(args.model_save_dir, exist_ok=True)
+    os.makedirs(args.metrics_save_dir, exist_ok=True)
+    print(f"✅ 模型将保存至: {os.path.abspath(args.model_save_dir)}")
+    print(f"📊 性能指标将保存至: {os.path.abspath(args.metrics_save_dir)}")
     # ================================================================
     # 2. 计算保存间隔和保存点
     num_saves = 10
@@ -174,24 +172,25 @@ def main():
 
         # --- 检查是否到达保存点 ---
         '''if epoch in save_epochs:
-            model_save_path = os.path.join(save_dir, f'model_epoch_{epoch}.pth')
+            model_save_path = os.path.join(args.model_save_dir, f'model_epoch_{epoch}.pth')
             print(f"💾 到达保存点，正在保存模型到: {model_save_path}")
             torch.save(model.state_dict(), model_save_path)'''
 
     total_train_end = time.time()
     print("\n--- 训练完成 ---")
     print(f"⏱️ 总训练耗时：{total_train_end - total_train_start:.2f} 秒")
-    #print(f"💾 所有检查点已保存在目录: {save_dir}")
 
-    # ==================== 6. 新增：在训练结束后，调用函数保存CSV文件 ====================
-    train_metrics_path = os.path.join(metrics_save_dir, 'train_metrics.csv')
-    test_metrics_path = os.path.join(metrics_save_dir, 'test_metrics.csv')
+    # 使用新的目录参数来构建路径
+    train_metrics_path = os.path.join(args.metrics_save_dir, 'train_metrics.csv')
+    test_metrics_path = os.path.join(args.metrics_save_dir, 'test_metrics.csv')
 
     print(f"📊 正在保存训练历史到: {train_metrics_path}")
     save_metrics_to_csv(train_metrics_path, train_history)
 
     print(f"📊 正在保存测试历史到: {test_metrics_path}")
     save_metrics_to_csv(test_metrics_path, test_history)
+
+    #print(f"💾 所有检查点已保存在目录: {args.model_save_dir}")
 
 if __name__ == "__main__":
     main()

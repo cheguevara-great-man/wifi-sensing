@@ -54,7 +54,6 @@ find_suitable_gpu() {
     local required_mem=${MODEL_MEM_REQUIREMENTS[$model_name]}
     local best_gpu=-1
     local max_free_mem=-1
-
     for gpu_id in "${GPU_LIST[@]}"; do
         local mem_free
         mem_free=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits -i "$gpu_id")
