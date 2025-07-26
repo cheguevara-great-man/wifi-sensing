@@ -115,9 +115,10 @@ def main():
     # 新增的参数，用于自定义实验名称，并设为必填项
     parser.add_argument('--exp_name', required=True, type=str, help='自定义实验名称，将用于创建模型保存目录。')
     parser.add_argument('--sample_rate', type=float, default=1.0, help='二次降采样的比例 (0.05到1.0)，对应25Hz到500Hz。默认为1.0，即不进行二次采样。')
+    parser.add_argument('--interpolation', type=str,default='linear',choices=['linear', 'cubic', 'nearest', 'idw', 'rbf'],help='升采样时使用的插值方法。默认为 "linear"。')
     args = parser.parse_args()
 
-    train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root,args.sample_rate)
+    train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root,args.sample_rate,args.interpolation)
     criterion = nn.CrossEntropyLoss()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
