@@ -181,7 +181,7 @@ class Widar_Dataset(Dataset):
         return x,y
 
 
-'''# ----------------- 为IDW插值创建一个辅助函数 -----------------
+# ----------------- 为IDW插值创建一个辅助函数 -----------------
 def idw_interpolation(x_known, y_known, x_interp, p=2):
     """
     一维反距离权重插值 (IDW)。
@@ -210,10 +210,10 @@ def idw_interpolation(x_known, y_known, x_interp, p=2):
         y_interp[i] = np.sum(weights * y_known) / np.sum(weights)
 
     return y_interp
-# -----------------------------------------------------------'''
+# -----------------------------------------------------------
 
 
-def idw_interpolation(x_known, y_known, x_interp, p=2):
+'''def idw_interpolation(x_known, y_known, x_interp, p=2):
     # 1. 使用广播机制计算所有距离，形成一个 (N_interp, N_known) 的矩阵
     # x_interp[:, np.newaxis] 将 (N_interp,) 数组变形为 (N_interp, 1) 的列向量
     # (N_interp, 1) 和 (N_known,) 广播成 (N_interp, N_known)
@@ -236,4 +236,4 @@ def idw_interpolation(x_known, y_known, x_interp, p=2):
     # `rows` 对应于 `x_interp` 的索引, `cols` 对应于 `x_known` 的索引
     if rows.size > 0:
         y_interp[rows] = y_known[cols]
-    return y_interp
+    return y_interp'''

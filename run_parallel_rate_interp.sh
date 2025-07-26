@@ -17,27 +17,28 @@ GPU_LIST=(0 1 2 3 4)
 BASE_EXP_NAME="energy_rate_interp_$(date +%Y%m%d_%H%M)"
 
 # 4. 【第一层循环】采样率 (对应 --sample_rate)
-SAMPLE_RATES=(0.05 0.1 0.2 0.25 0.3 0.4 0.5 0.6 0.7 0.8 0.9)
+SAMPLE_RATES=(0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9)
 
 # 5. 【第二层循环】插值方法 (对应 --interpolation)
-INTERPOLATION_METHODS=(linear cubic nearest idw rbf)
-
+#INTERPOLATION_METHODS=(linear cubic nearest idw rbf)
+INTERPOLATION_METHODS=(linear cubic nearest )
 # 6. 【第三层循环】模型及其显存需求 (单位: MiB)
 declare -A MODEL_MEM_REQUIREMENTS
 MODEL_MEM_REQUIREMENTS=(
-    ['MLP']=5800
-    ['LeNet']=2250
-    ['ResNet18']=2550
-    ['ResNet50']=2850
-    ['ResNet101']=3200
-    ['RNN']=2050
-    ['GRU']=2100
-    ['LSTM']=2150
-    ['BiLSTM']=2450
-    ['CNN+GRU']=3150
-    ['ViT']=5800
+    ['MLP']=6343
+    ['LeNet']=2500
+    ['ResNet18']=2714
+    ['ResNet50']=3019
+    ['ResNet101']=3437
+    ['RNN']=2136
+    ['GRU']=2287
+    ['LSTM']=2273
+    ['BiLSTM']=2626
+    ['CNN+GRU']=3382
+    ['ViT']=6245
 )
 MODELS=("${!MODEL_MEM_REQUIREMENTS[@]}")
+
 
 # --- 脚本核心逻辑 ---
 

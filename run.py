@@ -1,13 +1,6 @@
-import numpy as np
-import torch
-import torch.nn as nn
-import argparse
-from util import load_data_n_model
-import time
 import os  # 引入 os 模块
-import csv # 1. 引入 csv 模块
-
 # ==================== 解决 num_workers 和 numpy 的冲突 ====================
+#为了设置进程为单线程，减少cpu占用
 # 明确控制 OpenBLAS 的线程数，这是你当前NumPy的主要后端
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
 # OpenBLAS 内部使用 OpenMP，所以这个也很重要
@@ -18,7 +11,18 @@ os.environ['MKL_NUM_THREADS'] = '1'
 os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
 # 如果你确定不使用BLIS，这个可以不设，保留也无害
 os.environ['BLIS_NUM_THREADS'] = '1'
+os.environ['NUMEXPR_NUM_THREADS'] = '1' # 有时也需要这个
 # =========================================================================
+import numpy as np
+import torch
+#为了设置进程为单线程，减少cpu占用
+torch.set_num_threads(1)
+import torch.nn as nn
+import argparse
+from util import load_data_n_model
+import time
+import csv # 1. 引入 csv 模块
+
 
 
 # train_one_epoch 和 test_one_epoch 函数与上一个回答中的版本相同
