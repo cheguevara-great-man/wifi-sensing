@@ -1,3 +1,4 @@
+#代码目的：验证预处理中的均值方差是怎么算出来的
 import numpy as np
 import glob
 import scipy.io as sio

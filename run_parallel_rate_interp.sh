@@ -12,12 +12,12 @@
 PYTHON_SCRIPT="run.py"
 DATASET_NAME="NTU-Fi_HAR"
 # 2. 可用GPU
-GPU_LIST=(0 1 2 3 4)
+GPU_LIST=(0 1 2 3 4 5)
 # 3. 基础实验名称 (将作为所有子实验目录的前缀)
 BASE_EXP_NAME="energy_rate_interp_$(date +%Y%m%d_%H%M)"
 
 # 4. 【第一层循环】采样率 (对应 --sample_rate)
-SAMPLE_RATES=(0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9)
+SAMPLE_RATES=(0.05 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9)
 
 # 5. 【第二层循环】插值方法 (对应 --interpolation)
 #INTERPOLATION_METHODS=(linear cubic nearest idw rbf)
@@ -25,17 +25,17 @@ INTERPOLATION_METHODS=(linear cubic nearest )
 # 6. 【第三层循环】模型及其显存需求 (单位: MiB)
 declare -A MODEL_MEM_REQUIREMENTS
 MODEL_MEM_REQUIREMENTS=(
-    ['MLP']=6343
-    ['LeNet']=2500
-    ['ResNet18']=2714
-    ['ResNet50']=3019
-    ['ResNet101']=3437
-    ['RNN']=2136
-    ['GRU']=2287
-    ['LSTM']=2273
-    ['BiLSTM']=2626
-    ['CNN+GRU']=3382
-    ['ViT']=6245
+    ['MLP']=6872
+    ['LeNet']=2574
+    ['ResNet18']=2941
+    ['ResNet50']=3271
+    ['ResNet101']=3723
+    ['RNN']=2314
+    ['GRU']=2478
+    ['LSTM']=2462
+    ['BiLSTM']=2844
+    ['CNN+GRU']=3663
+    ['ViT']=6765
 )
 MODELS=("${!MODEL_MEM_REQUIREMENTS[@]}")
 
@@ -121,7 +121,7 @@ while ((${#PENDING_TASKS[@]} > 0)); do
             echo "[`date '+%H:%M:%S'`] ✅ 任务已启动，PID: $pid, 日志: $log_file"
 
             launched_in_this_pass=true
-            sleep 5
+            sleep 10
         fi
     done
 
