@@ -1,8 +1,6 @@
 #目的：对比基准实验和降采样插值实验的性能
 #运行方法：
-'''python analyze_grid_search_with_baseline.py \
-   --grid_exp "energy_rate_interp_20250726_2329" \
-   --baseline_exp "energy_500hz_baseline_20250725_1614"'''
+'''python analyze_grid_search_with_baseline.py --grid_exp "energy_rate_interp_20250726_2329" --baseline_exp "energy_500hz_baseline_20250725_1614"'''
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -14,7 +12,7 @@ MODELS = [
     'MLP', 'LeNet', 'ResNet18', 'ResNet50', 'ResNet101', 'RNN',
     'GRU', 'LSTM', 'BiLSTM', 'CNN+GRU', 'ViT'
 ]
-SAMPLE_RATES_GRID = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+SAMPLE_RATES_GRID = [0.01,0.02,0.03,0.04,0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 INTERPOLATION_METHODS_GRID = ['linear', 'cubic', 'nearest']
 
 
