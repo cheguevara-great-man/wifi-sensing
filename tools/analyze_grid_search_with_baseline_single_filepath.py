@@ -1,7 +1,7 @@
 #目的：对比基准实验和降采样插值实验的性能
 #运行方法：
 '''python analyze_grid_search_with_baseline.py --grid_exp "energy_rate_interp_20250726_2329" --baseline_exp "energy_500hz_baseline_20250725_1614"'''
-'''python analyze_grid_search_with_baseline.py --grid_exp "energy_rate_interp_20250726_2329" --baseline_exp "energy_500hz_baseline_20250725_1614"'''
+'''python analyze_grid_search_with_baseline_single_filepath.py --grid_exp "energy_rate_interp_20250809_1219" '''
 
 import os
 import pandas as pd
@@ -14,11 +14,11 @@ MODELS = [
     'MLP', 'LeNet', 'ResNet18', 'ResNet50', 'ResNet101', 'RNN',
     'GRU', 'LSTM', 'BiLSTM', 'CNN+GRU', 'ViT'
 ]
-SAMPLE_RATES_GRID = [0.004 ,0.006 ,0.008 ,0.01,0.02,0.03,0.04,0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+SAMPLE_RATES_GRID = [0.004 ,0.006 ,0.008 ,0.01,0.02,0.03,0.04,0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9,1]
 INTERPOLATION_METHODS_GRID = ['linear', 'cubic', 'nearest']
 
 
-def collect_all_results(base_metrics_path, grid_search_exp_name, baseline_exp_name):
+def collect_all_results(base_metrics_path, grid_search_exp_name):
     """收集网格搜索和基准实验的数据。"""
     print("--- 开始收集所有实验结果 (包括基准) ---")
     all_results = []
@@ -41,7 +41,7 @@ def collect_all_results(base_metrics_path, grid_search_exp_name, baseline_exp_na
                         print(f"  - 错误 (网格搜索): 读取 {csv_path} 时出错: {e}")
 
     # 2. 收集基准实验的结果
-    baseline_path = os.path.join(base_metrics_path, baseline_exp_name)
+    baseline_path = os.path.join(base_metrics_path)
     for model in MODELS:
         csv_path = os.path.join(baseline_path, model, "test_metrics.csv")
         if os.path.exists(csv_path):
@@ -132,7 +132,6 @@ if __name__ == '__main__':
     #parser.add_argument('--dataset', type=str, default='NTU-Fi_HAR', help='Dataset name to analyze.')
     parser.add_argument('--dataset', type=str, default='NTU-Fi-HumanID', help='Dataset name to analyze.')
     parser.add_argument('--grid_exp', type=str, required=True, help='Name of the grid search experiment.')
-    parser.add_argument ('--baseline_exp', type=str, required=True, help='Name of the baseline experiment.')
 
     args = parser.parse_args()
 
@@ -140,6 +139,6 @@ if __name__ == '__main__':
     output_path = os.path.join(args.dataset_root, args.dataset, "Analysis", f"{args.grid_exp}_vs_baseline")
     os.makedirs(output_path, exist_ok=True)
 
-    master_dataframe = collect_all_results(metrics_path, args.grid_exp, args.baseline_exp)
+    master_dataframe = collect_all_results(metrics_path, args.grid_exp)
     generate_heatmaps(master_dataframe, output_path)
     generate_summary_report(master_dataframe, output_path)

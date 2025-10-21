@@ -10,7 +10,7 @@
 
 # 1. Python脚本和数据集
 PYTHON_SCRIPT="run.py"
-DATASET_NAME="NTU-Fi_HAR"
+DATASET_NAME="NTU-Fi-HumanID"
 # 2. 可用GPU
 GPU_LIST=(0 1 2 3 4 5 6)
 # 3. 基础实验名称 (将作为所有子实验目录的前缀)
@@ -18,7 +18,8 @@ BASE_EXP_NAME="energy_rate_interp_$(date +%Y%m%d_%H%M)"
 
 # 4. 【第一层循环】采样率 (对应 --sample_rate)
 #SAMPLE_RATES=(0.01 0.02 0.03 0.04 0.05 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9)
-SAMPLE_RATES=(0.002 0.004 0.006 0.008)
+#SAMPLE_RATES=(0.004 0.006 0.008 0.01 0.02 0.03 0.04 0.05 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9)
+SAMPLE_RATES=(1)
 
 # 5. 【第二层循环】插值方法 (对应 --interpolation)
 #INTERPOLATION_METHODS=(linear cubic nearest idw rbf)
