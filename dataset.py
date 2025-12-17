@@ -1,5 +1,5 @@
 USE_ENERGY_INPUT = True  # 设置为 True 使用能量，设置为 False 使用幅度 在 CSI_Dataset 中
-
+USE_MASK_0 = False  #默认不mask，即用插值
 import numpy as np
 import glob
 import scipy.io as sio
@@ -23,7 +23,7 @@ def UT_HAR_dataset(root_dir):
         with open(label_dir, 'rb') as f:
             label = np.load(f)
         WiFi_data[label_name] = torch.Tensor(label)
-
+# 只是方便打印size
     '''for data_dir in data_list:
         print("Processing data file:", data_dir)
         data_name = data_dir.split('/')[-1].split('.')[0]
@@ -99,49 +99,55 @@ class CSI_Dataset(Dataset):
             pick_indices_float = np.linspace(0, original_len - 1, resample_len)
             # 2. 将它们四舍五入为整数索引，并确保类型为int
             pick_indices_int = np.round(pick_indices_float).astype(int)
+            if USE_MASK_0:
+                x_sparse = np.zeros_like(x)  # shape: (C, 500)
+                x_sparse[:, pick_indices_int] = x[:, pick_indices_int]
+                # 6. 用稀疏后的数据替换 x（不插值）
+                x = x_sparse
             # 3. 从原始数据中挑选出这些索引对应的点
-            x_downsampled = x[:, pick_indices_int]
+            else:
+                x_downsampled = x[:, pick_indices_int]
 
-            # --- 升采样 (保持不变，因为模型需要500长度的输入) ---
-            # --- 升采样 (根据方法选择) ---
-            # downsampled_indices 是降采样后数据点在原始坐标系中的“位置”
-            downsampled_indices = pick_indices_int
-            original_indices = np.arange(original_len)
-            x_upsampled = np.zeros_like(x, dtype=float)
+                # --- 升采样 (保持不变，因为模型需要500长度的输入) ---
+                # --- 升采样 (根据方法选择) ---
+                # downsampled_indices 是降采样后数据点在原始坐标系中的“位置”
+                downsampled_indices = pick_indices_int
+                original_indices = np.arange(original_len)
+                x_upsampled = np.zeros_like(x, dtype=float)
 
-            # 对每一行(channel)独立进行插值
-            for i in range(x.shape[0]):
-                y_known = x_downsampled[i, :]
-                x_known = downsampled_indices
-                x_new = original_indices
+                # 对每一行(channel)独立进行插值
+                for i in range(x.shape[0]):
+                    y_known = x_downsampled[i, :]
+                    x_known = downsampled_indices
+                    x_new = original_indices
 
-                # Scipy的插值函数不允许在插值区间外进行外插，我们需要处理边界情况
-                # 确保插值范围被已知点覆盖
-                f_interp = None  # 初始化插值函数
+                    # Scipy的插值函数不允许在插值区间外进行外插，我们需要处理边界情况
+                    # 确保插值范围被已知点覆盖
+                    f_interp = None  # 初始化插值函数
 
-                if self.interpolation_method == 'linear':
-                    # fill_value="extrapolate" 允许外插，处理边界情况
-                    f_interp = interp1d(x_known, y_known, kind='linear', bounds_error=False, fill_value="extrapolate")
-                    x_upsampled[i, :] = f_interp(x_new)
+                    if self.interpolation_method == 'linear':
+                        # fill_value="extrapolate" 允许外插，处理边界情况
+                        f_interp = interp1d(x_known, y_known, kind='linear', bounds_error=False, fill_value="extrapolate")
+                        x_upsampled[i, :] = f_interp(x_new)
 
-                elif self.interpolation_method == 'cubic':
-                    f_interp = interp1d(x_known, y_known, kind='cubic', bounds_error=False, fill_value="extrapolate")
-                    x_upsampled[i, :] = f_interp(x_new)
+                    elif self.interpolation_method == 'cubic':
+                        f_interp = interp1d(x_known, y_known, kind='cubic', bounds_error=False, fill_value="extrapolate")
+                        x_upsampled[i, :] = f_interp(x_new)
 
-                elif self.interpolation_method == 'nearest':
-                    f_interp = interp1d(x_known, y_known, kind='nearest', bounds_error=False, fill_value="extrapolate")
-                    x_upsampled[i, :] = f_interp(x_new)
+                    elif self.interpolation_method == 'nearest':
+                        f_interp = interp1d(x_known, y_known, kind='nearest', bounds_error=False, fill_value="extrapolate")
+                        x_upsampled[i, :] = f_interp(x_new)
 
-                elif self.interpolation_method == 'idw':
-                    x_upsampled[i, :] = idw_interpolation(x_known, y_known, x_new)
+                    elif self.interpolation_method == 'idw':
+                        x_upsampled[i, :] = idw_interpolation(x_known, y_known, x_new)
 
-                elif self.interpolation_method == 'rbf':
-                    # RBF需要所有已知点来构建函数，计算量较大
-                    rbf_func = Rbf(x_known, y_known,
-                                   function='multiquadric')  # 可选: 'linear', 'cubic', 'quintic', 'gaussian', 'inverse_multiquadric'
-                    x_upsampled[i, :] = rbf_func(x_new)
-            x = x_upsampled
-        # ==========================================================
+                    elif self.interpolation_method == 'rbf':
+                        # RBF需要所有已知点来构建函数，计算量较大
+                        rbf_func = Rbf(x_known, y_known,
+                                       function='multiquadric')  # 可选: 'linear', 'cubic', 'quintic', 'gaussian', 'inverse_multiquadric'
+                        x_upsampled[i, :] = rbf_func(x_new)
+                x = x_upsampled
+            # ==========================================================
 
         x = x.reshape(3, 114, 500)
         if self.transform:

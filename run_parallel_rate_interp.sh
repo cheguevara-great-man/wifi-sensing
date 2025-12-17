@@ -98,9 +98,9 @@ while ((${#PENDING_TASKS[@]} > 0)); do
             # --- 动态构建实验名、日志和模型保存路径 ---
             exp_sub_dir="rate_${sample_rate}/interp_${interpolation_method}"
              # 2. 构建模型、指标和日志的最终保存目录
-            model_dir="${DATASET_ROOT_DIR}/${DATASET_NAME}/Model Parameters/${BASE_EXP_NAME}/${exp_sub_dir}/${model_name}"
-            metrics_dir="${DATASET_ROOT_DIR}/${DATASET_NAME}/Metrics/${BASE_EXP_NAME}/${exp_sub_dir}/${model_name}"
-            log_dir="${DATASET_ROOT_DIR}/${DATASET_NAME}/Logs/${BASE_EXP_NAME}/${exp_sub_dir}/${model_name}"
+            model_dir="${DATASET_ROOT_DIR}/${DATASET_NAME}/EXP/${BASE_EXP_NAME}/Model Parameters/${exp_sub_dir}/${model_name}"
+            metrics_dir="${DATASET_ROOT_DIR}/${DATASET_NAME}/EXP/${BASE_EXP_NAME}/Metrics/${exp_sub_dir}/${model_name}"
+            log_dir="${DATASET_ROOT_DIR}/${DATASET_NAME}/EXP/${BASE_EXP_NAME}/Logs/${exp_sub_dir}/${model_name}"
             # 3. 确保所有目录都存在
             mkdir -p "$model_dir" "$metrics_dir" "$log_dir"
             log_file="${log_dir}/training.log"

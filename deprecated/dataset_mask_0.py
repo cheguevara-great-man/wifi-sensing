@@ -1,3 +1,5 @@
+#降采样，零填充
+#已经合并到run.py，此代码无用了
 USE_ENERGY_INPUT = True  # 设置为 True 使用能量，设置为 False 使用幅度 在 CSI_Dataset 中
 
 import numpy as np
@@ -23,7 +25,7 @@ def UT_HAR_dataset(root_dir):
         with open(label_dir, 'rb') as f:
             label = np.load(f)
         WiFi_data[label_name] = torch.Tensor(label)
-
+# 只是方便打印size
     '''for data_dir in data_list:
         print("Processing data file:", data_dir)
         data_name = data_dir.split('/')[-1].split('.')[0]
