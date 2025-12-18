@@ -119,13 +119,16 @@ def main():
     # 新增的参数，用于自定义实验名称，并设为必填项
     #parser.add_argument('--exp_name', required=True, type=str, help='自定义实验名称，将用于创建模型保存目录。')
     parser.add_argument('--sample_rate', type=float, default=1.0, help='二次降采样的比例 (0.05到1.0)，对应25Hz到500Hz。默认为1.0，即不进行二次采样。')
+    parser.add_argument('--sample_method', type=str,default='uniform_nearest',choices=['uniform_nearest', 'equidistant', 'gaussian', 'poisson'],help='降采样方法。默认为 "uniform_nearest"。')
     parser.add_argument('--interpolation', type=str,default='linear',choices=['linear', 'cubic', 'nearest', 'idw', 'rbf'],help='升采样时使用的插值方法。默认为 "linear"。')
+    parser.add_argument('--use_energy_input', type=int, default=1, choices=[0, 1],help='是否使用能量信息 (1:是, 0:否)。默认为 1 (是)。')
+    parser.add_argument('--use_mask_0', type=int, default=0, choices=[0, 1],help='是否使用 mask_0 (1:是, 0:否)。默认为 0 (否)。')
     # 新增两个参数，用于接收完整的保存目录
     parser.add_argument('--model_save_dir', required=True, type=str, help='模型检查点的完整保存目录。')
     parser.add_argument('--metrics_save_dir', required=True, type=str, help='性能指标文件的完整保存目录。')
     args = parser.parse_args()
 
-    train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root,args.sample_rate,args.interpolation)
+    train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root,args.sample_rate, args.sample_method ,args.interpolation,args.use_energy_input ,args.use_mask_0 )
     criterion = nn.CrossEntropyLoss()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)

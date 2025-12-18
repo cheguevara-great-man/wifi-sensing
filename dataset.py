@@ -1,5 +1,4 @@
-USE_ENERGY_INPUT = True  # 设置为 True 使用能量，设置为 False 使用幅度 在 CSI_Dataset 中
-USE_MASK_0 = False  #默认不mask，即用插值
+
 import numpy as np
 import glob
 import scipy.io as sio
@@ -23,32 +22,6 @@ def UT_HAR_dataset(root_dir):
         with open(label_dir, 'rb') as f:
             label = np.load(f)
         WiFi_data[label_name] = torch.Tensor(label)
-# 只是方便打印size
-    '''for data_dir in data_list:
-        print("Processing data file:", data_dir)
-        data_name = data_dir.split('/')[-1].split('.')[0]
-        print("Data name:", data_name)
-        with open(data_dir, 'rb') as f:
-            data = np.load(f)
-
-
-        print("Original data shape:", data.shape)
-        # 根据代码中给定的 reshape 操作，假设每个样本的列数为 250*90=22500
-        data = data.reshape(len(data), 1, 250, 90)
-        #print(data)
-        print("Reshaped data shape:", data.shape)
-        data_norm = (data - np.min(data)) / (np.max(data) - np.min(data))
-        WiFi_data[data_name] = torch.Tensor(data_norm)
-        #print(data_norm)
-    # 加载标签文件
-    for label_dir in label_list:
-        print("Processing label file:", label_dir)
-        label_name = label_dir.split('/')[-1].split('.')[0]
-        with open(label_dir, 'rb') as f:
-            label = np.load(f)
-        print("Label shape:", label.shape)
-        WiFi_data[label_name] = torch.Tensor(label)'''
-
     return WiFi_data
 
 
@@ -56,8 +29,10 @@ def UT_HAR_dataset(root_dir):
 class CSI_Dataset(Dataset):
     """CSI dataset."""
 
-    def __init__(self, root_dir, modal='CSIamp', transform=None, sample_rate=1.0, interpolation_method='linear',few_shot=False, k=5, single_trace=True):
+    def __init__(self, root_dir, modal='CSIamp', transform=None, sample_rate=1.0, sample_method='uniform_nearest', interpolation_method='linear',use_energy_input = True,use_mask_0 = False,few_shot=False, k=5, single_trace=True):
         """
+        USE_ENERGY_INPUT = True  # 设置为 True 使用能量，设置为 False 使用幅度 在 CSI_Dataset 中
+        USE_MASK_0 = False  #默认不mask，即用插值
         Args:
             root_dir (string): Directory with all the images.
             modal (CSIamp/CSIphase): CSI data modal
@@ -71,7 +46,10 @@ class CSI_Dataset(Dataset):
         self.folder = glob.glob(root_dir+'/*/')
         self.category = {self.folder[i].split('/')[-2]:i for i in range(len(self.folder))}
         self.sample_rate = sample_rate  # 保存采样率
+        self.sample_method = sample_method  # 保存采样方法
         self.interpolation_method = interpolation_method  # 保存插值方法
+        self.use_energy_input = use_energy_input
+        self.use_mask_0 = use_mask_0
     def __len__(self):
         return len(self.data_list)
 
@@ -83,7 +61,7 @@ class CSI_Dataset(Dataset):
         y = self.category[sample_dir.split('/')[-2]]
         x = sio.loadmat(sample_dir)[self.modal]
         x = x[:, ::4]
-        if USE_ENERGY_INPUT:
+        if self.use_energy_input:
             x = np.square(x)
             x = (x - 1815.7732) / 396.1198
         else:
@@ -93,27 +71,65 @@ class CSI_Dataset(Dataset):
         if self.sample_rate < 1.0:
             original_len = x.shape[1]  # 应该是 500
             resample_len = int(original_len * self.sample_rate)
+            if self.sample_method == 'uniform_nearest':
+                # --- 降采样 (均匀挑选) ---
+                # 1. 生成200个在[0, 499]区间内均匀分布的浮点数索引
+                pick_indices_float = np.linspace(0, original_len - 1, resample_len)
+                # 2. 将它们四舍五入为整数索引，并确保类型为int
+                pick_indices_int = np.round(pick_indices_float).astype(int)
 
-            # --- 降采样 (均匀挑选) ---
-            # 1. 生成200个在[0, 499]区间内均匀分布的浮点数索引
-            pick_indices_float = np.linspace(0, original_len - 1, resample_len)
-            # 2. 将它们四舍五入为整数索引，并确保类型为int
-            pick_indices_int = np.round(pick_indices_float).astype(int)
-            if USE_MASK_0:
+            elif self.sample_method == 'equidistant':
+                # [等距采样]: 严格每隔N个点取一个 (类似 x[:, ::step])
+                # 注意：这种方法可能会丢弃最后一段数据
+                step = original_len / resample_len
+                # 使用 arange 生成索引，并截取前 resample_len 个以防精度误差
+                pick_indices_int = np.arange(0, original_len, step).astype(int)[:resample_len]
+            elif self.sample_method == 'gaussian':
+                # [高斯间隔采样] (Gaussian Inter-arrival Time)
+                # 模拟网络抖动 (Jitter)。间隔时间服从正态分布。
+                # 生成 resample_len - 1 个间隔。
+                # loc=1.0 代表平均间隔，scale=0.5 代表抖动程度 (可调整)
+                intervals = np.random.normal(loc=1.0, scale=0.5, size=resample_len - 1)
+                intervals = np.abs(intervals)  # 间隔必须为正数
+
+                # 关键步骤：归一化。
+                # 因为我们要正好填满 0 到 499 的长度，所以要把随机生成的间隔按比例缩放
+                total_duration = original_len - 1
+                intervals = intervals / intervals.sum() * total_duration
+
+                # 累加间隔得到浮点坐标，并加上起始点 0
+                pick_indices_float = np.hstack(([0], np.cumsum(intervals)))
+                pick_indices_int = np.round(pick_indices_float).astype(int)
+
+            elif self.sample_method == 'poisson':
+                # [泊松采样] (Poisson Process / Exponential Inter-arrival Time)
+                # 模拟无记忆性的随机流量。间隔时间服从指数分布。
+                # scale 参数不重要，因为后面会被归一化覆盖
+                intervals = np.random.exponential(scale=1.0, size=resample_len - 1)
+
+                # 关键步骤：归一化。保证所有间隔加起来正好等于总长度
+                total_duration = original_len - 1
+                intervals = intervals / intervals.sum() * total_duration
+
+                # 累加得到坐标
+                pick_indices_float = np.hstack(([0], np.cumsum(intervals)))
+                pick_indices_int = np.round(pick_indices_float).astype(int)
+            else:
+                raise ValueError(f"Unknown sample method: {self.sample_method}")
+            pick_indices_int = np.unique(pick_indices_int)
+            if self.use_mask_0:
+                # 模式 A: 掩码模式 (保持 500 长度，未选中点置 0)
                 x_sparse = np.zeros_like(x)  # shape: (C, 500)
                 x_sparse[:, pick_indices_int] = x[:, pick_indices_int]
-                # 6. 用稀疏后的数据替换 x（不插值）
-                x = x_sparse
-            # 3. 从原始数据中挑选出这些索引对应的点
+                x = x_sparse  # 替换 x，流程结束，不进入后续插值
             else:
+                # 模式 B: 降采样模式 (变短为 resample_len) -> 后续接插值
                 x_downsampled = x[:, pick_indices_int]
 
-                # --- 升采样 (保持不变，因为模型需要500长度的输入) ---
-                # --- 升采样 (根据方法选择) ---
-                # downsampled_indices 是降采样后数据点在原始坐标系中的“位置”
-                downsampled_indices = pick_indices_int
-                original_indices = np.arange(original_len)
-                x_upsampled = np.zeros_like(x, dtype=float)
+                # 准备插值所需的坐标
+                downsampled_indices = pick_indices_int  # 已知点的 x 坐标
+                original_indices = np.arange(original_len)  # 目标点的 x 坐标 (0..499)
+                x_upsampled = np.zeros_like(x, dtype=float)  # 准备容器
 
                 # 对每一行(channel)独立进行插值
                 for i in range(x.shape[0]):
@@ -216,30 +232,3 @@ def idw_interpolation(x_known, y_known, x_interp, p=2):
         y_interp[i] = np.sum(weights * y_known) / np.sum(weights)
 
     return y_interp
-# -----------------------------------------------------------
-
-
-'''def idw_interpolation(x_known, y_known, x_interp, p=2):
-    # 1. 使用广播机制计算所有距离，形成一个 (N_interp, N_known) 的矩阵
-    # x_interp[:, np.newaxis] 将 (N_interp,) 数组变形为 (N_interp, 1) 的列向量
-    # (N_interp, 1) 和 (N_known,) 广播成 (N_interp, N_known)
-    distances = np.abs(x_interp[:, np.newaxis] - x_known)
-    # 2. 找到距离为0的位置，为避免除零错误，暂时用一个极小值替换
-    # 同时记录下哪些点是已知点，以便后续精确赋值
-    is_known_point = (distances == 0)
-    distances[is_known_point] = 1e-10  # 用一个极小正数替换0
-    # 3. 计算权重矩阵
-    weights = 1.0 / (distances ** p)
-    # 4. 计算加权平均值
-    # (N_interp, N_known) * (N_known,) -> 广播成 (N_interp, N_known)
-    numerator = np.sum(weights * y_known, axis=1)  # 沿行求和，得到 (N_interp,) 数组
-    denominator = np.sum(weights, axis=1)  # 沿行求和，得到 (N_interp,) 数组
-    y_interp = numerator / denominator
-    # 5. 精确修复那些恰好是已知点的插值结果
-    # 找到哪些待插值点是已知点
-    rows, cols = np.where(is_known_point)
-    # is_known_point 是一个布尔矩阵，`np.where` 返回满足条件的(行, 列)索引
-    # `rows` 对应于 `x_interp` 的索引, `cols` 对应于 `x_known` 的索引
-    if rows.size > 0:
-        y_interp[rows] = y_known[cols]
-    return y_interp'''

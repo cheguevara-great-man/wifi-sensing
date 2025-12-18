@@ -5,7 +5,7 @@ from widar_model import *
 from self_supervised_model import *
 import torch
 
-def load_data_n_model(dataset_name, model_name, root,sample_rate=1.0,interpolation_method='linear'):
+def load_data_n_model(dataset_name, model_name, root,sample_rate=1.0,sample_method='uniform_nearest',interpolation_method='linear',use_energy_input = 1,use_mask_0 = 0):
     classes = {'UT_HAR_data':7,'NTU-Fi-HumanID':14,'NTU-Fi_HAR':6,'Widar':22}
     if dataset_name == 'UT_HAR_data':
         print('using dataset: UT-HAR DATA')
@@ -64,8 +64,8 @@ def load_data_n_model(dataset_name, model_name, root,sample_rate=1.0,interpolati
     elif dataset_name == 'NTU-Fi-HumanID':
         print('using dataset: NTU-Fi-HumanID')
         num_classes = classes['NTU-Fi-HumanID']
-        train_loader = torch.utils.data.DataLoader(dataset=CSI_Dataset(root + 'NTU-Fi-HumanID/train_amp/',sample_rate=sample_rate,interpolation_method=interpolation_method ), batch_size=64, shuffle=True)
-        test_loader = torch.utils.data.DataLoader(dataset=CSI_Dataset(root + 'NTU-Fi-HumanID/test_amp/',sample_rate=sample_rate,interpolation_method=interpolation_method ), batch_size=64, shuffle=False)
+        train_loader = torch.utils.data.DataLoader(dataset=CSI_Dataset(root + 'NTU-Fi-HumanID/train_amp/',sample_rate=sample_rate,sample_method=sample_method,interpolation_method=interpolation_method ,use_energy_input = use_energy_input,use_mask_0 = use_mask_0), batch_size=64, shuffle=True)
+        test_loader = torch.utils.data.DataLoader(dataset=CSI_Dataset(root + 'NTU-Fi-HumanID/test_amp/',sample_rate=sample_rate,sample_method=sample_method,interpolation_method=interpolation_method ,use_energy_input = use_energy_input,use_mask_0 = use_mask_0), batch_size=64, shuffle=False)
         if model_name == 'MLP':
             print("using model: MLP")
             model = NTU_Fi_MLP(num_classes)
@@ -119,7 +119,7 @@ def load_data_n_model(dataset_name, model_name, root,sample_rate=1.0,interpolati
         #train_loader = torch.utils.data.DataLoader(dataset=CSI_Dataset(root + 'NTU-Fi_HAR/train_amp/'), batch_size=64, shuffle=True)
         NUM_WORKERS = 2  # 你可以尝试 4, 8, 16 等，#为了设置进程为单线程，减少cpu占用
         train_loader = torch.utils.data.DataLoader(
-            dataset=CSI_Dataset(root + 'NTU-Fi_HAR/train_amp/',sample_rate=sample_rate ,interpolation_method=interpolation_method ),  # 别忘了使用你修正后的数据路径！
+            dataset=CSI_Dataset(root + 'NTU-Fi_HAR/train_amp/',sample_rate=sample_rate ,sample_method=sample_method,interpolation_method=interpolation_method ,use_energy_input = use_energy_input,use_mask_0 = use_mask_0),  # 别忘了使用你修正后的数据路径！
             batch_size=64,
             shuffle=True,
             num_workers=NUM_WORKERS,
@@ -127,7 +127,7 @@ def load_data_n_model(dataset_name, model_name, root,sample_rate=1.0,interpolati
             #persistent_workers=True  # 如果PyTorch版本>=1.8，建议开启，可以避免每个epoch都重建worker进程
         )
         test_loader = torch.utils.data.DataLoader(
-            dataset=CSI_Dataset(root + 'NTU-Fi_HAR/test_amp/',sample_rate=sample_rate,interpolation_method=interpolation_method ),  # 别忘了使用你修正后的数据路径！
+            dataset=CSI_Dataset(root + 'NTU-Fi_HAR/test_amp/',sample_rate=sample_rate,sample_method=sample_method,interpolation_method=interpolation_method ,use_energy_input = use_energy_input,use_mask_0 = use_mask_0),  # 别忘了使用你修正后的数据路径！
             batch_size=64,
             shuffle=False,
             num_workers=NUM_WORKERS,

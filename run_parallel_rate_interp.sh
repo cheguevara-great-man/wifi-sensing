@@ -15,7 +15,8 @@ DATASET_NAME="NTU-Fi-HumanID"
 GPU_LIST=(0 1 2 3 4 5 6)
 # 3. 基础实验名称 (将作为所有子实验目录的前缀)
 BASE_EXP_NAME="energy_rate_interp_$(date +%Y%m%d_%H%M)"
-
+use_energy_input=1      # 1: 使用能量信息 (True)
+use_mask_0=0            # 0: 不使用 mask_0 (False)
 # 4. 【第一层循环】采样率 (对应 --sample_rate)
 #SAMPLE_RATES=(0.01 0.02 0.03 0.04 0.05 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9)
 #SAMPLE_RATES=(0.004 0.006 0.008 0.01 0.02 0.03 0.04 0.05 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9)
@@ -113,6 +114,8 @@ while ((${#PENDING_TASKS[@]} > 0)); do
                 --model "$model_name" \
                 --sample_rate "$sample_rate" \
                 --interpolation "$interpolation_method" \
+                --use_energy_input "$use_energy_input" \
+                --use_mask_0 "$use_mask_0" \
                 --model_save_dir "$model_dir" \
                 --metrics_save_dir "$metrics_dir" \
                 > "$log_file" 2>&1 &
