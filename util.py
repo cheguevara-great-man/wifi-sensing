@@ -9,7 +9,7 @@ def load_data_n_model(dataset_name, model_name, root,sample_rate=1.0,sample_meth
     classes = {'UT_HAR_data':7,'NTU-Fi-HumanID':14,'NTU-Fi_HAR':6,'Widar':22}
     if dataset_name == 'UT_HAR_data':
         print('using dataset: UT-HAR DATA')
-        data = UT_HAR_dataset(root)
+        data = UT_HAR_dataset(root, sample_rate=sample_rate, sample_method=sample_method,interpolation_method=interpolation_method, use_energy_input=use_energy_input, use_mask_0=use_mask_0)
         train_set = torch.utils.data.TensorDataset(data['X_train'],data['y_train'])
         test_set = torch.utils.data.TensorDataset(torch.cat((data['X_val'],data['X_test']),0),torch.cat((data['y_val'],data['y_test']),0))
         train_loader = torch.utils.data.DataLoader(train_set,batch_size=256,shuffle=True, drop_last=True) # drop_last=True
