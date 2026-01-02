@@ -36,14 +36,14 @@ def train_one_epoch(model, tensor_loader, criterion, device, optimizer):
 
     for data in tensor_loader:
         inputs, labels = data
-        inputs = inputs.to(device)
-        labels = labels.to(device)
-        labels = labels.type(torch.LongTensor)
+        inputs = inputs.to(device, dtype=torch.float32)
+        labels = labels.to(device, dtype=torch.long)
+        #labels = labels.type(torch.LongTensor)
 
         optimizer.zero_grad()
         outputs = model(inputs)
-        outputs = outputs.to(device)
-        outputs = outputs.type(torch.FloatTensor)
+        #outputs = outputs.to(device)
+        #outputs = outputs.type(torch.FloatTensor)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
@@ -114,13 +114,13 @@ def main():
         print("并且 'datasets' 文件夹在 'code/' 的上一级目录。")
         return
     parser = argparse.ArgumentParser('WiFi Imaging Benchmark')
-    parser.add_argument('--dataset', choices = ['UT_HAR_data','NTU-Fi-HumanID','NTU-Fi_HAR','Widar'])
+    parser.add_argument('--dataset', choices = ['UT_HAR_data','NTU-Fi-HumanID','NTU-Fi_HAR','Widar','Widar_digit_amp','Widar_digit_conj'])
     parser.add_argument('--model', choices = ['MLP','LeNet','ResNet18','ResNet50','ResNet101','RNN','GRU','LSTM','BiLSTM', 'CNN+GRU','ViT'])
     # 新增的参数，用于自定义实验名称，并设为必填项
     #parser.add_argument('--exp_name', required=True, type=str, help='自定义实验名称，将用于创建模型保存目录。')
     parser.add_argument('--sample_rate', type=float, default=1.0, help='二次降采样的比例 (0.05到1.0)，对应25Hz到500Hz。默认为1.0，即不进行二次采样。')
     parser.add_argument('--sample_method', type=str,default='uniform_nearest',choices=['uniform_nearest', 'equidistant', 'gaussian', 'poisson'],help='降采样方法。默认为 "uniform_nearest"。')
-    parser.add_argument('--interpolation', type=str,default='linear',choices=['linear', 'cubic', 'nearest', 'idw', 'rbf'],help='升采样时使用的插值方法。默认为 "linear"。')
+    parser.add_argument('--interpolation', type=str,default='linear',choices=['linear', 'cubic', 'nearest', 'idw', 'rbf','spline','akima'],help='升采样时使用的插值方法。默认为 "linear"。')
     parser.add_argument('--use_energy_input', type=int, default=1, choices=[0, 1],help='是否使用能量信息 (1:是, 0:否)。默认为 1 (是)。')
     parser.add_argument('--use_mask_0', type=int, default=0, choices=[0, 1],help='是否使用 mask_0 (1:是, 0:否)。默认为 0 (否)。')
     # 新增两个参数，用于接收完整的保存目录
@@ -144,7 +144,7 @@ def main():
     print(f"📊 性能指标将保存至: {os.path.abspath(args.metrics_save_dir)}")
     # ================================================================
     # 2. 计算保存间隔和保存点
-    num_saves = 10
+    num_saves = 4
     if train_epoch < num_saves:
         # 如果总epoch数小于10，则每个epoch都保存
         save_interval = 1

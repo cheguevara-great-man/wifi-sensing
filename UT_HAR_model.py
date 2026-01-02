@@ -370,3 +370,4 @@ class UT_HAR_ViT(nn.Sequential):
             TransformerEncoder(depth, emb_size=emb_size, **kwargs),
             ClassificationHead(emb_size, n_classes)
         )
+

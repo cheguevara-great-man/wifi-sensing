@@ -1,11 +1,13 @@
 
 import numpy as np
 import glob
+import csv
+from collections import OrderedDict
 import scipy.io as sio
 import torch
 from torch.utils.data import Dataset, DataLoader
-from scipy.interpolate import interp1d, Rbf # 引入 scipy 的插值工具
-
+from scipy.interpolate import interp1d, Rbf,Akima1DInterpolator, make_interp_spline# 引入 scipy 的插值工具
+import os
 def UT_HAR_dataset(root_dir, sample_rate=1.0, sample_method='uniform_nearest',
                    interpolation_method='linear', use_energy_input=1, use_mask_0=0):
     """
@@ -284,5 +286,276 @@ def resample_signal_data(x, sample_rate, sample_method, use_mask_0, interpolatio
             elif interpolation_method == 'rbf':
                 rbf_func = Rbf(x_known, y_known, function='multiquadric')
                 x_upsampled[i, :] = rbf_func(x_new)
+            elif interpolation_method == 'spline':
+                # 默认 k=3 (三次)，如果点少于4个，降级为 k=1 (线性)
+                k_degree = 3 if len(x_known) > 3 else 1
+                spl_func = make_interp_spline(x_known, y_known, k=k_degree)
+                # BSpline 对象默认可调用进行外插
+                x_upsampled[i, :] = spl_func(x_new)
+            elif interpolation_method == 'akima':
+                akima_func = Akima1DInterpolator(x_known, y_known)
+                x_upsampled[i, :] = akima_func(x_new, extrapolate=True)
         x = x_upsampled
     return x
+
+# ======================================================================================
+# Widar3 digit (sharded .npz) loader
+# Expected structure (root_dir):
+#   root_dir/
+#     amp/shards/shard-00001.npz   (keys: XA, y, sid)
+#     conj/shards/shard-00001.npz  (keys: XB, y, sid)
+#     meta/index.csv               (needs columns: sample_id,label,gesture_name,shard_id,offset,...)
+#     meta/label_map.csv           (optional)
+#
+#root = "/home/cxy/data/code/datasets/Widar_digit"
+# Returned sample shape:
+#   amp : x -> (1, T, 90)
+#   conj: x -> (1, T, 180)
+# ======================================================================================
+
+def _is_digit_gesture(name: str) -> bool:
+    # name like "Draw-0"..."Draw-9"
+    if not isinstance(name, str):
+        return False
+    if not name.startswith("Draw-"):
+        return False
+    suf = name.split("Draw-")[-1]
+    return suf.isdigit() and 0 <= int(suf) <= 9
+
+
+class WidarDigitShardDataset(Dataset):
+    def __init__(
+        self,
+        root_dir: str,
+        variant: str = "amp",        # "amp" | "conj"
+        split: str = "train",        # "train" | "val" | "test" | "all"
+        seed: int = 2026,
+        split_ratio=(0.8, 0.0, 0.2),
+        digits_only: bool = True,
+        shard_cache: int = 2,
+
+        # ====== 新增：对齐 UT_HAR/NTU_Fi 的可控采样参数 ======
+
+        sample_rate: float = 1.0,
+        sample_method: str = "uniform_nearest",
+        interpolation_method: str = "linear",
+        use_mask_0: int = 0,                 # 0: 插值还原；1: mask=0不插值
+    ):
+        super().__init__()
+        self.root_dir = root_dir
+        self.variant = variant
+        self.split = split
+        self.seed = seed
+        self.split_ratio = split_ratio
+        self.digits_only = digits_only
+        self.shard_cache = max(int(shard_cache), 0)
+
+        # 新增参数保存
+        self.sample_rate = float(sample_rate)
+        self.sample_method = sample_method
+        self.interpolation_method = interpolation_method
+        self.use_mask_0 = bool(use_mask_0)
+
+        if variant not in ("amp", "conj"):
+            raise ValueError("variant must be 'amp' or 'conj'")
+
+        self.shard_dir = os.path.join(root_dir, variant, "shards")
+        self.x_key = "XA" if variant == "amp" else "XB"
+
+        index_path = os.path.join(root_dir, "meta", "index.csv")
+        if not os.path.exists(index_path):
+            raise FileNotFoundError(
+                f"index.csv not found: {index_path}\n"
+                f"Expected root_dir like: .../Widar_digit (containing amp/, conj/, meta/)"
+            )
+
+        # read index rows
+        rows = []
+        with open(index_path, "r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                try:
+                    gesture_name = r.get("gesture_name", "")
+                    label = int(float(r.get("label", -1)))
+                    shard_id = int(float(r.get("shard_id", -1)))
+                    offset = int(float(r.get("offset", -1)))
+                    sample_id = r.get("sample_id", "")
+                    if digits_only and gesture_name and (not _is_digit_gesture(gesture_name)):
+                        continue
+                    if label < 0 or shard_id < 0 or offset < 0:
+                        continue
+                    rows.append(
+                        {
+                            "sample_id": sample_id,
+                            "gesture_name": gesture_name,
+                            "label": label,
+                            "shard_id": shard_id,
+                            "offset": offset,
+                        }
+                    )
+                except Exception:
+                    continue
+
+        if len(rows) == 0:
+            raise RuntimeError(
+                f"No valid rows found in {index_path}. "
+                f"Check columns (sample_id,label,gesture_name,shard_id,offset) and digits_only={digits_only}."
+            )
+
+        # stratified split by label for reproducibility
+        if split not in ("train", "val", "test", "all"):
+            raise ValueError("split must be train/val/test/all")
+
+        if split == "all":
+            self.items = rows
+        else:
+            # group indices per label
+            by_label = {}
+            for i, row in enumerate(rows):
+                by_label.setdefault(row["label"], []).append(i)
+
+            rng = np.random.RandomState(seed)
+            picked = []
+            tr_r, va_r, te_r = split_ratio
+            for _, idxs in by_label.items():
+                idxs = np.asarray(idxs, dtype=np.int64)
+                rng.shuffle(idxs)
+                n = len(idxs)
+                n_tr = int(n * tr_r)
+                n_va = int(n * va_r)
+                # remainder goes to test
+                tr = idxs[:n_tr]
+                va = idxs[n_tr : n_tr + n_va]
+                te = idxs[n_tr + n_va :]
+
+                if split == "train":
+                    picked.extend(tr.tolist())
+                elif split == "val":
+                    picked.extend(va.tolist())
+                else:
+                    picked.extend(te.tolist())
+
+            # keep deterministic order after picking
+            picked = np.asarray(picked, dtype=np.int64)
+            rng.shuffle(picked)
+            self.items = [rows[i] for i in picked.tolist()]
+
+        # shard cache (LRU)
+        self._cache = OrderedDict()
+
+    def __len__(self):
+        return len(self.items)
+
+    def _resolve_shard_path(self, shard_id: int) -> str:
+        # Prefer shard-%05d.npz. If not found, try 0/1-index shift.
+        cand = [
+            os.path.join(self.shard_dir, f"shard-{shard_id:05d}.npz"),
+            os.path.join(self.shard_dir, f"shard-{(shard_id+1):05d}.npz"),
+            os.path.join(self.shard_dir, f"shard-{max(shard_id-1,0):05d}.npz"),
+        ]
+        for p in cand:
+            if os.path.exists(p):
+                return p
+        # last resort: glob
+        g = glob.glob(os.path.join(self.shard_dir, f"*{shard_id}*.npz"))
+        if g:
+            return g[0]
+        raise FileNotFoundError(f"Cannot find shard file for shard_id={shard_id} under {self.shard_dir}")
+
+    def _load_shard(self, shard_id: int):
+        if self.shard_cache > 0 and shard_id in self._cache:
+            obj = self._cache.pop(shard_id)
+            self._cache[shard_id] = obj
+            return obj
+
+        shard_path = self._resolve_shard_path(shard_id)
+        npz = np.load(shard_path, allow_pickle=True)
+        # materialize arrays (np.load returns lazy zip readers)
+        obj = {
+            self.x_key: npz[self.x_key].astype(np.float32, copy=False),
+            "y": npz["y"].astype(np.int64, copy=False),
+        }
+        npz.close()
+
+        if self.shard_cache > 0:
+            self._cache[shard_id] = obj
+            while len(self._cache) > self.shard_cache:
+                self._cache.popitem(last=False)
+        return obj
+
+    def __getitem__(self, idx):
+        row = self.items[idx]
+        shard_id = row["shard_id"]
+        off = row["offset"]
+        label = int(row["label"])
+
+        shard = self._load_shard(shard_id)
+        x = shard[self.x_key][off]  # (T, F)
+        # x may be (T,F) or (1,T,F) depending on save; normalize to (1,T,F)
+        #这里降采样
+        if x.ndim == 3:
+            x = x[0]
+        if x.shape[0] == 2000:
+            x = x[::4, :]
+        if self.sample_rate < 1.0 or self.use_mask_0:
+            # resample_signal_data 期望 (C,T)，所以转置
+            x_ct = x.T  # (F, T=500)
+            x_ct = resample_signal_data(
+                x_ct,
+                sample_rate=self.sample_rate,
+                sample_method=self.sample_method,
+                use_mask_0=self.use_mask_0,
+                interpolation_method=self.interpolation_method,
+            )
+            x = x_ct.T  # (500, F)
+
+        if x.ndim == 3:
+            # (1,T,F)
+            x_t = torch.from_numpy(x.astype(np.float32, copy=False))
+        else:
+            x_t = torch.from_numpy(x.astype(np.float32, copy=False)).unsqueeze(0)
+        y_t = torch.tensor(label, dtype=torch.long)
+        return x_t, y_t
+
+def Widar_digit_amp_dataset(
+    root_dir: str,
+    split: str = "train",
+    sample_rate=1.0,
+    sample_method="uniform_nearest",
+    interpolation_method="linear",
+    use_mask_0=0,
+    **kwargs
+):
+    return WidarDigitShardDataset(
+        root_dir= "/home/cxy/data/code/datasets/sense-fi/Widar_digit", variant="amp", split=split,
+        sample_rate=sample_rate, sample_method=sample_method,
+        interpolation_method=interpolation_method, use_mask_0=use_mask_0,
+        **kwargs
+    )
+
+
+def Widar_digit_conj_dataset(
+    root_dir: str,
+    split: str = "train",
+    sample_rate=1.0,
+    sample_method="uniform_nearest",
+    interpolation_method="linear",
+    use_mask_0=0,
+    **kwargs
+):
+    return WidarDigitShardDataset(
+        root_dir= "/home/cxy/data/code/datasets/sense-fi/Widar_digit", variant="conj", split=split,
+        sample_rate=sample_rate, sample_method=sample_method,
+        interpolation_method=interpolation_method, use_mask_0=use_mask_0,
+        **kwargs
+    )
+
+
+'''# root = "/home/cxy/data/code/datasets/Widar_digit"
+def Widar_digit_amp_dataset(root_dir: str, split: str = "train", **kwargs):
+    return WidarDigitShardDataset(root_dir=root_dir, variant="amp", split=split, **kwargs)
+
+
+def Widar_digit_conj_dataset(root_dir: str, split: str = "train", **kwargs):
+    return WidarDigitShardDataset(root_dir=root_dir, variant="conj", split=split, **kwargs)
+'''

@@ -4,9 +4,12 @@ from NTU_Fi_model import *
 from widar_model import *
 from self_supervised_model import *
 import torch
+import os
+from Widar_digit_model import Widar_digit_amp_model, Widar_digit_conj_model
 
 def load_data_n_model(dataset_name, model_name, root,sample_rate=1.0,sample_method='uniform_nearest',interpolation_method='linear',use_energy_input = 1,use_mask_0 = 0):
-    classes = {'UT_HAR_data':7,'NTU-Fi-HumanID':14,'NTU-Fi_HAR':6,'Widar':22}
+    classes = {'UT_HAR_data':7,'NTU-Fi-HumanID':14,'NTU-Fi_HAR':6,'Widar':22,'Widar_digit_amp': 10,
+'Widar_digit_conj': 10,}
     if dataset_name == 'UT_HAR_data':
         print('using dataset: UT-HAR DATA')
         data = UT_HAR_dataset(root, sample_rate=sample_rate, sample_method=sample_method,interpolation_method=interpolation_method, use_energy_input=use_energy_input, use_mask_0=use_mask_0)
@@ -180,6 +183,76 @@ def load_data_n_model(dataset_name, model_name, root,sample_rate=1.0,sample_meth
             model = NTU_Fi_ViT(num_classes=num_classes)
             train_epoch = 30
         return train_loader, test_loader, model, train_epoch
+
+    elif dataset_name == 'Widar_digit_amp':
+        # Expect directory: <root>/Widar_digit/{amp,conj,meta}/...
+        #ds_root = os.path.join(root, 'Widar_digit')
+        #train_set = Widar_digit_amp_dataset(ds_root, split='train')
+        train_set = Widar_digit_amp_dataset(
+            root_dir=root,
+            split="train",
+            sample_rate=sample_rate,
+            sample_method=sample_method,
+            interpolation_method=interpolation_method,
+            use_mask_0=use_mask_0,
+        )
+        test_set = Widar_digit_amp_dataset(
+            root_dir=root,
+            split="test",
+            sample_rate=sample_rate,
+            sample_method=sample_method,
+            interpolation_method=interpolation_method,
+            use_mask_0=use_mask_0,
+        )
+        train_loader = DataLoader(dataset=train_set, batch_size=64, shuffle=True, drop_last=True, num_workers=2, pin_memory=True)
+        test_loader  = DataLoader(dataset=test_set,  batch_size=64, shuffle=False, drop_last=False, num_workers=2, pin_memory=True)
+
+        # infer T/F from the first sample
+        x0, _ = train_set[0]
+        T, F = int(x0.shape[-2]), int(x0.shape[-1])
+
+        num_classes = classes[dataset_name]
+        train_epoch = 200
+
+        model = Widar_digit_amp_model(model_name, num_classes=10, T=500)
+
+        return train_loader,test_loader,model,train_epoch
+
+    elif dataset_name == 'Widar_digit_conj':
+        ds_root = os.path.join(root, 'Widar_digit')
+        train_set = Widar_digit_amp_dataset(
+            root_dir=root,
+            split="train",
+            sample_rate=sample_rate,
+            sample_method=sample_method,
+            interpolation_method=interpolation_method,
+            use_mask_0=use_mask_0,
+        )
+        test_set = Widar_digit_amp_dataset(
+            root_dir=root,
+            split="test",
+            sample_rate=sample_rate,
+            sample_method=sample_method,
+            interpolation_method=interpolation_method,
+            use_mask_0=use_mask_0,
+        )
+        train_set = Widar_digit_conj_dataset(ds_root, split='train')
+        '''test_set = torch.utils.data.ConcatDataset([
+            Widar_digit_conj_dataset(ds_root, split='val'),
+            Widar_digit_conj_dataset(ds_root, split='test'),
+        ])'''
+        train_loader = DataLoader(dataset=train_set, batch_size=128, shuffle=True, drop_last=True, num_workers=8, pin_memory=True)
+        test_loader  = DataLoader(dataset=test_set,  batch_size=128, shuffle=False, drop_last=False, num_workers=8, pin_memory=True)
+
+        x0, _ = train_set[0]
+        T, F = int(x0.shape[-2]), int(x0.shape[-1])
+
+        num_classes = classes[dataset_name]
+        train_epoch = 200
+
+        model = Widar_digit_conj_model(model_name, num_classes=10, T=500)
+
+        return train_loader,test_loader,model,train_epoch
 
     elif dataset_name == 'Widar':
         print('using dataset: Widar')
