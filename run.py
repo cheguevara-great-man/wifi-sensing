@@ -28,7 +28,7 @@ import csv # 1. 引入 csv 模块
 # train_one_epoch 和 test_one_epoch 函数与上一个回答中的版本相同
 # 这里为了完整性再次包含它们
 
-def train_one_epoch(model, tensor_loader, criterion, device, optimizer):
+'''def train_one_epoch(model, tensor_loader, criterion, device, optimizer):
     model.train()
     epoch_loss = 0
     epoch_accuracy = 0
@@ -55,6 +55,81 @@ def train_one_epoch(model, tensor_loader, criterion, device, optimizer):
 
     epoch_loss = epoch_loss / num_samples
     epoch_accuracy = epoch_accuracy / num_samples
+    return epoch_loss, epoch_accuracy'''
+
+def train_one_epoch(
+    model, tensor_loader, criterion, device, optimizer,
+    log_every=200,              # 每多少 step 打印一次
+    max_steps=None,            # 只跑前 max_steps 步就退出（快检用），None 表示跑完整个 epoch
+    sanity_check=True,         # 是否在第一个 batch 打印输入/标签统计
+    grad_check=False           # 是否检查梯度/参数是否在更新（debug 用）
+):
+    model.train()
+    epoch_loss = 0.0
+    epoch_correct = 0
+    num_samples = 0
+
+    first_param_before = None
+    if grad_check:
+        # 用来验证 optimizer 真的在更新参数
+        first_param_before = next(model.parameters()).detach().clone()
+
+    for step, (inputs, labels) in enumerate(tensor_loader):
+        # ---- 1) 搬到 device（保持 dtype 正确）
+        inputs = inputs.to(device, dtype=torch.float32, non_blocking=True)
+        labels = labels.to(device, dtype=torch.long, non_blocking=True)
+
+        # ---- 2) 第一个 batch 做一次 sanity check
+        if sanity_check and step == 0:
+            with torch.no_grad():
+                print(f"[sanity] inputs: shape={tuple(inputs.shape)} dtype={inputs.dtype} "
+                      f"min={inputs.min().item():.4f} max={inputs.max().item():.4f} "
+                      f"nan={torch.isnan(inputs).any().item()} inf={torch.isinf(inputs).any().item()}")
+                print(f"[sanity] labels: shape={tuple(labels.shape)} dtype={labels.dtype} "
+                      f"min={labels.min().item()} max={labels.max().item()} "
+                      f"unique~={labels.unique().numel()}")
+
+        # ---- 3) forward/backward/update
+        optimizer.zero_grad(set_to_none=True)
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        if torch.isnan(loss) or torch.isinf(loss):
+            print("[ERROR] loss is NaN/Inf, stop.")
+            break
+
+        loss.backward()
+        optimizer.step()
+
+        # ---- 4) 统计 epoch 指标
+        bs = inputs.size(0)
+        epoch_loss += loss.item() * bs
+        pred = outputs.argmax(dim=1)
+        epoch_correct += (pred == labels).sum().item()
+        num_samples += bs
+
+        # ---- 5) step 级日志（不用等一个 epoch）
+        if (step % log_every) == 0:
+            with torch.no_grad():
+                step_acc = (pred == labels).float().mean().item()
+            print(f"[train] step={step} loss={loss.item():.4f} acc={step_acc:.3f}")
+
+        # ---- 6) 快检：只跑前 max_steps 步
+        if (max_steps is not None) and (step + 1 >= max_steps):
+            print(f"[train] early stop at step {step+1}/{max_steps}")
+            break
+
+    if num_samples == 0:
+        return 0.0, 0.0
+
+    epoch_loss = epoch_loss / num_samples
+    epoch_accuracy = epoch_correct / num_samples
+
+    if grad_check and first_param_before is not None:
+        with torch.no_grad():
+            first_param_after = next(model.parameters()).detach()
+            delta = (first_param_after - first_param_before).abs().mean().item()
+        print(f"[grad_check] first_param abs-mean delta = {delta:.6e}")
+
     return epoch_loss, epoch_accuracy
 
 
@@ -162,6 +237,11 @@ def main():
     train_history = []
     test_history = []
 
+    # [新增] 早停相关的变量
+    best_test_acc = 0.0  # 记录历史最佳准确率
+    patience = 20  # 容忍度：如果 20 个 epoch 没提升就停止
+    patience_counter = 0  # 计数器
+    # ===================================================
     # --- 训练主循环 ---
     total_train_start = time.time()
     for epoch in range(1, train_epoch + 1):  # 循环从1开始，方便与epoch编号对应
@@ -177,11 +257,39 @@ def main():
         train_history.append({'epoch': epoch, 'loss': train_loss, 'accuracy': train_acc})
         test_history.append({'epoch': epoch, 'loss': test_loss, 'accuracy': test_acc})
 
+        # ==================== [核心修改] 早停与最佳模型保存 ====================
+        if test_acc > best_test_acc:
+            best_test_acc = test_acc
+            patience_counter = 0  # 重置计数器
+
+            # 保存最佳模型 (覆盖式保存，始终只有一个 best_model.pth)
+            # 只有当 Epoch > 10 以后，才真正开始执行保存硬盘的操作
+            if epoch > 20:
+                best_model_path = os.path.join(args.model_save_dir, 'best_model.pth')
+                torch.save(model.state_dict(), best_model_path)
+                print(f"🌟 新纪录！最佳模型已保存 (Acc: {best_test_acc:.4f})")
+            else:
+                print(f"🌟 新纪录 (Acc: {best_test_acc:.4f}) - 训练初期暂不保存")
+
+        else:
+            # 同样，前 10 个 Epoch 也不消耗 patience（宽容期）
+            if epoch > 20:
+                patience_counter += 1
+                print(f"⚠️ 性能未提升 ({patience_counter}/{patience})")
+
+        # 检查是否需要停止
+        if patience_counter >= patience:
+            print(f"\n🛑 触发早停机制！测试集准确率已连续 {patience} 个 Epoch 未提升。")
+            print(f"   当前最佳准确率: {best_test_acc:.4f}")
+            print(f"   在 Epoch {epoch} 停止训练。")
+            break  # 跳出 for 循环
+        # ===================================================================
+
         # --- 检查是否到达保存点 ---
-        '''if epoch in save_epochs:
+        if epoch in save_epochs:
             model_save_path = os.path.join(args.model_save_dir, f'model_epoch_{epoch}.pth')
             print(f"💾 到达保存点，正在保存模型到: {model_save_path}")
-            torch.save(model.state_dict(), model_save_path)'''
+            torch.save(model.state_dict(), model_save_path)
 
     total_train_end = time.time()
     print("\n--- 训练完成 ---")

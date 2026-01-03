@@ -328,9 +328,7 @@ class WidarDigitShardDataset(Dataset):
         self,
         root_dir: str,
         variant: str = "amp",        # "amp" | "conj"
-        split: str = "train",        # "train" | "val" | "test" | "all"
-        seed: int = 2026,
-        split_ratio=(0.8, 0.0, 0.2),
+        split: str = "train",  # "train" | "test" | "all"
         digits_only: bool = True,
         shard_cache: int = 2,
 
@@ -345,8 +343,6 @@ class WidarDigitShardDataset(Dataset):
         self.root_dir = root_dir
         self.variant = variant
         self.split = split
-        self.seed = seed
-        self.split_ratio = split_ratio
         self.digits_only = digits_only
         self.shard_cache = max(int(shard_cache), 0)
 
@@ -358,11 +354,20 @@ class WidarDigitShardDataset(Dataset):
 
         if variant not in ("amp", "conj"):
             raise ValueError("variant must be 'amp' or 'conj'")
+        # ✅ 新数据结构：root_dir/{train,test}/{amp,conj}/shards + root_dir/{train,test}/meta/index.csv
+        if split in ("train", "test"):
+            split_root = os.path.join(root_dir, split)
+        elif split == "all":
+            # 兼容：如果你传进来的 root_dir 已经是 .../train 或 .../test，也可以用 all
+            split_root = root_dir
+        else:
+            raise ValueError("split must be train/test/all (new reshards layout)")
 
-        self.shard_dir = os.path.join(root_dir, variant, "shards")
-        self.x_key = "XA" if variant == "amp" else "XB"
 
-        index_path = os.path.join(root_dir, "meta", "index.csv")
+        self.shard_dir = os.path.join(split_root, variant, "shards")
+        self.x_key = "X"
+
+        index_path = os.path.join(split_root, "meta", "index.csv")
         if not os.path.exists(index_path):
             raise FileNotFoundError(
                 f"index.csv not found: {index_path}\n"
@@ -402,44 +407,8 @@ class WidarDigitShardDataset(Dataset):
                 f"Check columns (sample_id,label,gesture_name,shard_id,offset) and digits_only={digits_only}."
             )
 
-        # stratified split by label for reproducibility
-        if split not in ("train", "val", "test", "all"):
-            raise ValueError("split must be train/val/test/all")
 
-        if split == "all":
-            self.items = rows
-        else:
-            # group indices per label
-            by_label = {}
-            for i, row in enumerate(rows):
-                by_label.setdefault(row["label"], []).append(i)
-
-            rng = np.random.RandomState(seed)
-            picked = []
-            tr_r, va_r, te_r = split_ratio
-            for _, idxs in by_label.items():
-                idxs = np.asarray(idxs, dtype=np.int64)
-                rng.shuffle(idxs)
-                n = len(idxs)
-                n_tr = int(n * tr_r)
-                n_va = int(n * va_r)
-                # remainder goes to test
-                tr = idxs[:n_tr]
-                va = idxs[n_tr : n_tr + n_va]
-                te = idxs[n_tr + n_va :]
-
-                if split == "train":
-                    picked.extend(tr.tolist())
-                elif split == "val":
-                    picked.extend(va.tolist())
-                else:
-                    picked.extend(te.tolist())
-
-            # keep deterministic order after picking
-            picked = np.asarray(picked, dtype=np.int64)
-            rng.shuffle(picked)
-            self.items = [rows[i] for i in picked.tolist()]
-
+        self.items = rows
         # shard cache (LRU)
         self._cache = OrderedDict()
 
@@ -495,8 +464,6 @@ class WidarDigitShardDataset(Dataset):
         #这里降采样
         if x.ndim == 3:
             x = x[0]
-        if x.shape[0] == 2000:
-            x = x[::4, :]
         if self.sample_rate < 1.0 or self.use_mask_0:
             # resample_signal_data 期望 (C,T)，所以转置
             x_ct = x.T  # (F, T=500)
