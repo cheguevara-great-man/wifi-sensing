@@ -8,24 +8,24 @@
 # --- 用户配置区 ---
 
 PYTHON_SCRIPT="run.py"
-DATASET_NAME="Widar_digit_amp"
+DATASET_NAME="Widar_digit_conj"
 # 确保这里列出了你所有的 GPU ID
 GPU_LIST=(2 3 4 5 6 7)
 
-#BASE_EXP_NAME="amp_rate_interp_$(date +%Y%m%d_%H%M)"
-BASE_EXP_NAME="amp_rate_interp_20260102_2336"
+BASE_EXP_NAME="conj_rate_interp_$(date +%Y%m%d_%H%M)"
+#BASE_EXP_NAME="amp_rate_interp_20260102_2336"
 
 use_energy_input=0
 use_mask_0=0
 
 # 1. 采样方法 (3种)
-SAMPLE_METHODS=(equidistant)
+SAMPLE_METHODS=(equidistant gaussian poisson)
 
 # 2. 采样率 (6种)
 SAMPLE_RATES=(0.05 0.1 0.2 0.5 1)
 
 # 3. 插值方法 (4种)
-INTERPOLATION_METHODS=(cubic nearest)
+INTERPOLATION_METHODS=(linear cubic nearest)
 
 # 4. 模型 (5种) - 显存预估仅作参考，本脚本强制分配
 declare -A MODEL_MEM_REQUIREMENTS

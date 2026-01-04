@@ -204,8 +204,8 @@ def load_data_n_model(dataset_name, model_name, root,sample_rate=1.0,sample_meth
             interpolation_method=interpolation_method,
             use_mask_0=use_mask_0,
         )
-        train_loader = DataLoader(dataset=train_set, batch_size=128, shuffle=False, drop_last=True, num_workers=4, pin_memory=True, persistent_workers=True)
-        test_loader  = DataLoader(dataset=test_set,  batch_size=128, shuffle=False, drop_last=False, num_workers=4, pin_memory=True, persistent_workers=True)
+        train_loader = DataLoader(dataset=train_set, batch_size=128, shuffle=False, drop_last=True, num_workers=6, pin_memory=True, persistent_workers=True)
+        test_loader  = DataLoader(dataset=test_set,  batch_size=128, shuffle=False, drop_last=False, num_workers=2, pin_memory=True, persistent_workers=True)
 
         # infer T/F from the first sample
         x0, _ = train_set[0]
@@ -234,8 +234,8 @@ def load_data_n_model(dataset_name, model_name, root,sample_rate=1.0,sample_meth
             interpolation_method=interpolation_method,
             use_mask_0=use_mask_0,
         )
-        train_loader = DataLoader(dataset=train_set, batch_size=128, shuffle=False, drop_last=True, num_workers=4, pin_memory=True, persistent_workers=True)
-        test_loader  = DataLoader(dataset=test_set,  batch_size=128, shuffle=False, drop_last=False, num_workers=4, pin_memory=True, persistent_workers=True)
+        train_loader = DataLoader(dataset=train_set, batch_size=128, shuffle=False, drop_last=True, num_workers=6, pin_memory=True, persistent_workers=True)
+        test_loader  = DataLoader(dataset=test_set,  batch_size=128, shuffle=False, drop_last=False, num_workers=2, pin_memory=True, persistent_workers=True)
 
         x0, _ = train_set[0]
         T, F = int(x0.shape[-2]), int(x0.shape[-1])

@@ -59,9 +59,9 @@ import csv # 1. 引入 csv 模块
 
 def train_one_epoch(
     model, tensor_loader, criterion, device, optimizer,
-    log_every=200,              # 每多少 step 打印一次
+    log_every=2000,              # 每多少 step 打印一次
     max_steps=None,            # 只跑前 max_steps 步就退出（快检用），None 表示跑完整个 epoch
-    sanity_check=True,         # 是否在第一个 batch 打印输入/标签统计
+    sanity_check=False,         # 是否在第一个 batch 打印输入/标签统计
     grad_check=False           # 是否检查梯度/参数是否在更新（debug 用）
 ):
     model.train()
@@ -285,11 +285,11 @@ def main():
             break  # 跳出 for 循环
         # ===================================================================
 
-        # --- 检查是否到达保存点 ---
-        if epoch in save_epochs:
+        # --- 检查是否到达保存点 ---#前面有保存最佳模型了，所以这里不再保存。
+        '''if epoch in save_epochs:
             model_save_path = os.path.join(args.model_save_dir, f'model_epoch_{epoch}.pth')
             print(f"💾 到达保存点，正在保存模型到: {model_save_path}")
-            torch.save(model.state_dict(), model_save_path)
+            torch.save(model.state_dict(), model_save_path)'''
 
     total_train_end = time.time()
     print("\n--- 训练完成 ---")
