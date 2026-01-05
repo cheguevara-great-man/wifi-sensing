@@ -191,11 +191,12 @@ def idw_interpolation(x_known, y_known, x_interp, p=2):
 
     return y_interp
 
-def resample_signal_data(x, sample_rate, sample_method, use_mask_0, interpolation_method):
+def resample_signal_data(x, sample_rate, sample_method, use_mask_0, interpolation_method,is_rec=0):
     """
     通用的信号重采样/插值处理函数。
     自动适配输入数据的长度。
-
+    '''【修复版】原生支持 (Time, Channels) 输入，无需转置。
+    x shape: (T, F)  <-- 也就是 (500, 90) 或 (500, 180)'''
     Args:
         x (np.array): 输入数据，形状必须为 (Channels, Time)。
                       对于 CSI_Dataset 是 (C, 500), 对于 UT_HAR 是 (90, 250)。
@@ -212,11 +213,11 @@ def resample_signal_data(x, sample_rate, sample_method, use_mask_0, interpolatio
         return x
 
     # 自动获取当前数据的长度 (CSI=500, UT_HAR=250)
-    original_len = x.shape[1]
+    original_len = x.shape[0]
     resample_len = int(original_len * sample_rate)
+    num_channels = x.shape[1]  # 现在通道是第1维
 
     # ================= 1. 计算采样索引 =================
-    pick_indices_int = None
 
     if sample_method == 'uniform_nearest':
         pick_indices_float = np.linspace(0, original_len - 1, resample_len)
@@ -249,16 +250,23 @@ def resample_signal_data(x, sample_rate, sample_method, use_mask_0, interpolatio
     # 去重并排序 (适配随机采样)
     pick_indices_int = np.unique(pick_indices_int)
 
+    # ================= 2. 生成 Mask (新增核心逻辑) =================
+    # 默认全为 0
+    #这个mask太大，用一行就行了，这里有90行
+    mask = np.zeros_like(x, dtype=np.float32)
+    # 将采样点位置设为 1 ,DC层需要用到这个，所以下面把mask作为变量返回值。。。。。
+    mask[pick_indices_int,:] = 1.0
+
     # ================= 2. Mask 或 插值 =================
     if use_mask_0:
         # --- 模式 A: 掩码 (Masking) ---
         x_sparse = np.zeros_like(x)
-        x_sparse[:, pick_indices_int] = x[:, pick_indices_int]
+        x_sparse[ pick_indices_int,:] = x[pick_indices_int,:]
         x = x_sparse
     else:
         # --- 模式 B: 降采样 + 插值 (Resample + Interpolate) ---
         # 1. 先取出已知点
-        x_downsampled = x[:, pick_indices_int]
+        x_downsampled = x[ pick_indices_int,:]
 
         # 2. 准备坐标
         x_known = pick_indices_int  # 已知点的 X 坐标
@@ -266,38 +274,39 @@ def resample_signal_data(x, sample_rate, sample_method, use_mask_0, interpolatio
         x_upsampled = np.zeros_like(x, dtype=float)
 
         # 3. 对每个通道独立插值
-        for i in range(x.shape[0]):
-            y_known = x_downsampled[i, :]
+        for i in range(num_channels):
+            y_known = x_downsampled[:,i]
 
-            f_interp = None
             if interpolation_method == 'linear':
                 f_interp = interp1d(x_known, y_known, kind='linear', bounds_error=False, fill_value="extrapolate")
-                x_upsampled[i, :] = f_interp(x_new)
+                x_upsampled[:, i] = f_interp(x_new)
             elif interpolation_method == 'cubic':
                 f_interp = interp1d(x_known, y_known, kind='cubic', bounds_error=False, fill_value="extrapolate")
-                x_upsampled[i, :] = f_interp(x_new)
+                x_upsampled[:, i] = f_interp(x_new)
             elif interpolation_method == 'nearest':
                 f_interp = interp1d(x_known, y_known, kind='nearest', bounds_error=False, fill_value="extrapolate")
-                x_upsampled[i, :] = f_interp(x_new)
+                x_upsampled[:, i] = f_interp(x_new)
             elif interpolation_method == 'idw':
                 # 请确保 idw_interpolation 函数可用
                 # x_upsampled[i, :] = idw_interpolation(x_known, y_known, x_new)
                 pass
             elif interpolation_method == 'rbf':
                 rbf_func = Rbf(x_known, y_known, function='multiquadric')
-                x_upsampled[i, :] = rbf_func(x_new)
+                x_upsampled[:, i] = rbf_func(x_new)
             elif interpolation_method == 'spline':
                 # 默认 k=3 (三次)，如果点少于4个，降级为 k=1 (线性)
                 k_degree = 3 if len(x_known) > 3 else 1
                 spl_func = make_interp_spline(x_known, y_known, k=k_degree)
                 # BSpline 对象默认可调用进行外插
-                x_upsampled[i, :] = spl_func(x_new)
+                x_upsampled[:, i] = spl_func(x_new)
             elif interpolation_method == 'akima':
                 akima_func = Akima1DInterpolator(x_known, y_known)
-                x_upsampled[i, :] = akima_func(x_new, extrapolate=True)
+                x_upsampled[:, i] = akima_func(x_new, extrapolate=True)
         x = x_upsampled
-    return x
-
+    if is_rec:
+        return x, mask
+    else:
+        return x
 # ======================================================================================
 # Widar3 digit (sharded .npz) loader
 # Expected structure (root_dir):
@@ -331,7 +340,7 @@ class WidarDigitShardDataset(Dataset):
         split: str = "train",  # "train" | "test" | "all"
         digits_only: bool = True,
         shard_cache: int = 2,
-
+        is_rec: int = 0,
         # ====== 新增：对齐 UT_HAR/NTU_Fi 的可控采样参数 ======
 
         sample_rate: float = 1.0,
@@ -345,6 +354,7 @@ class WidarDigitShardDataset(Dataset):
         self.split = split
         self.digits_only = digits_only
         self.shard_cache = max(int(shard_cache), 0)
+        self.return_rec = int(is_rec)
 
         # 新增参数保存
         self.sample_rate = float(sample_rate)
@@ -464,26 +474,41 @@ class WidarDigitShardDataset(Dataset):
         #这里降采样
         if x.ndim == 3:
             x = x[0]
+        x_original = x.copy()
+        mask = np.ones_like(x, dtype=np.float32)
+
         if self.sample_rate < 1.0 or self.use_mask_0:
             # resample_signal_data 期望 (C,T)，所以转置
-            x_ct = x.T  # (F, T=500)
-            x_ct = resample_signal_data(
-                x_ct,
-                sample_rate=self.sample_rate,
-                sample_method=self.sample_method,
-                use_mask_0=self.use_mask_0,
-                interpolation_method=self.interpolation_method,
-            )
-            x = x_ct.T  # (500, F)
-
+            if self.return_rec:
+                x, mask_ct = resample_signal_data(
+                    x,
+                    sample_rate=self.sample_rate,
+                    sample_method=self.sample_method,
+                    use_mask_0=self.use_mask_0,
+                    interpolation_method=self.interpolation_method,
+                    is_rec=self.return_rec
+                )
+                mask = mask_ct
+            else:
+                x = resample_signal_data(
+                    x,
+                    sample_rate=self.sample_rate,
+                    sample_method=self.sample_method,
+                    use_mask_0=self.use_mask_0,
+                    interpolation_method=self.interpolation_method,
+                    is_rec=self.return_rec
+                )
         if x.ndim == 3:
             # (1,T,F)
             x_t = torch.from_numpy(x.astype(np.float32, copy=False))
         else:
             x_t = torch.from_numpy(x.astype(np.float32, copy=False)).unsqueeze(0)
         y_t = torch.tensor(label, dtype=torch.long)
-        return x_t, y_t
-
+        if self.return_rec == 0:
+            return x_t, y_t
+        mask_t = torch.from_numpy(mask.astype(np.float32, copy=False)).unsqueeze(0)
+        x_gt_t = torch.from_numpy(x_original.astype(np.float32, copy=False)).unsqueeze(0)
+        return x_t, mask_t, y_t, x_gt_t
 def Widar_digit_amp_dataset(
     root_dir: str,
     split: str = "train",
@@ -491,12 +516,13 @@ def Widar_digit_amp_dataset(
     sample_method="uniform_nearest",
     interpolation_method="linear",
     use_mask_0=0,
+    is_rec=0,
     **kwargs
 ):
     return WidarDigitShardDataset(
         root_dir= "/home/cxy/data/code/datasets/sense-fi/Widar_digit", variant="amp", split=split,
         sample_rate=sample_rate, sample_method=sample_method,
-        interpolation_method=interpolation_method, use_mask_0=use_mask_0,
+        interpolation_method=interpolation_method, use_mask_0=use_mask_0,is_rec=is_rec,
         **kwargs
     )
 
@@ -508,12 +534,13 @@ def Widar_digit_conj_dataset(
     sample_method="uniform_nearest",
     interpolation_method="linear",
     use_mask_0=0,
+    is_rec=0,
     **kwargs
 ):
     return WidarDigitShardDataset(
         root_dir= "/home/cxy/data/code/datasets/sense-fi/Widar_digit", variant="conj", split=split,
         sample_rate=sample_rate, sample_method=sample_method,
-        interpolation_method=interpolation_method, use_mask_0=use_mask_0,
+        interpolation_method=interpolation_method, use_mask_0=use_mask_0,is_rec=is_rec,
         **kwargs
     )
 

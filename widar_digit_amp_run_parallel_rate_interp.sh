@@ -8,32 +8,36 @@
 # --- 用户配置区 ---
 
 PYTHON_SCRIPT="run.py"
-DATASET_NAME="Widar_digit_conj"
+DATASET_NAME="Widar_digit_amp"
 # 确保这里列出了你所有的 GPU ID
-GPU_LIST=(2 3 4 5 6 7)
-
-BASE_EXP_NAME="conj_rate_interp_$(date +%Y%m%d_%H%M)"
+GPU_LIST=(2)
+#GPU_LIST=(2 3 4 5 6 7)
+BASE_EXP_NAME="amp_rate_mask_rec_$(date +%Y%m%d_%H%M)"
 #BASE_EXP_NAME="amp_rate_interp_20260102_2336"
 
 use_energy_input=0
-use_mask_0=0
-
+use_mask_0=1
+is_rec=1
+rec_alpha=0.5
 # 1. 采样方法 (3种)
-SAMPLE_METHODS=(equidistant gaussian poisson)
+#SAMPLE_METHODS=(equidistant gaussian poisson)
+SAMPLE_METHODS=(equidistant)
 
 # 2. 采样率 (6种)
-SAMPLE_RATES=(0.05 0.1 0.2 0.5 1)
+#SAMPLE_RATES=(0.05 0.1 0.2 0.5 1)
+SAMPLE_RATES=(0.1)
 
 # 3. 插值方法 (4种)
-INTERPOLATION_METHODS=(linear cubic nearest)
+#INTERPOLATION_METHODS=(linear cubic nearest)
+INTERPOLATION_METHODS=(linear)
 
 # 4. 模型 (5种) - 显存预估仅作参考，本脚本强制分配
 declare -A MODEL_MEM_REQUIREMENTS
 MODEL_MEM_REQUIREMENTS=(
     #['MLP']=2860
-    ['LeNet']=3669
+    #['LeNet']=3669
     ['ResNet18']=15704
-    ['RNN']=2277
+    #['RNN']=2277
     #['BiLSTM']=3131
 )
 MODELS=("${!MODEL_MEM_REQUIREMENTS[@]}")
@@ -119,6 +123,8 @@ while ((${#PENDING_TASKS[@]} > 0)); do
                 --use_mask_0 "$use_mask_0" \
                 --model_save_dir "$model_dir" \
                 --metrics_save_dir "$metrics_dir" \
+                --is_rec "$is_rec" \
+                --rec_alpha "$rec_alpha" \
                 > "$log_file" 2>&1 &
 
             pid=$!
@@ -140,8 +146,8 @@ while ((${#PENDING_TASKS[@]} > 0)); do
 
     # 如果這一轮没启动任何任务，说明所有卡都忙，休息一会儿
     if ! $launched_in_this_pass; then
-        echo "[$(date '+%H:%M:%S')] 💤 所有 8 张 GPU 都在忙，等待任务完成... (剩余任务: ${#PENDING_TASKS[@]})"
-        sleep 30
+        echo "[$(date '+%H:%M:%S')] 💤 所有 GPU 都在忙，等待任务完成... (剩余任务: ${#PENDING_TASKS[@]})"
+        sleep 60
     fi
 done
 

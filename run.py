@@ -59,9 +59,7 @@ import csv # 1. 引入 csv 模块
 
 def train_one_epoch(
     model, tensor_loader, criterion, device, optimizer,
-    log_every=2000,              # 每多少 step 打印一次
-    max_steps=None,            # 只跑前 max_steps 步就退出（快检用），None 表示跑完整个 epoch
-    sanity_check=False,         # 是否在第一个 batch 打印输入/标签统计
+    is_rec: int = 0, criterion_rec=None, alpha: float = 0.5,
     grad_check=False           # 是否检查梯度/参数是否在更新（debug 用）
 ):
     model.train()
@@ -74,28 +72,24 @@ def train_one_epoch(
         # 用来验证 optimizer 真的在更新参数
         first_param_before = next(model.parameters()).detach().clone()
 
-    for step, (inputs, labels) in enumerate(tensor_loader):
+    for batch in tensor_loader:
         # ---- 1) 搬到 device（保持 dtype 正确）
-        inputs = inputs.to(device, dtype=torch.float32, non_blocking=True)
-        labels = labels.to(device, dtype=torch.long, non_blocking=True)
-
-        # ---- 2) 第一个 batch 做一次 sanity check
-        if sanity_check and step == 0:
-            with torch.no_grad():
-                print(f"[sanity] inputs: shape={tuple(inputs.shape)} dtype={inputs.dtype} "
-                      f"min={inputs.min().item():.4f} max={inputs.max().item():.4f} "
-                      f"nan={torch.isnan(inputs).any().item()} inf={torch.isinf(inputs).any().item()}")
-                print(f"[sanity] labels: shape={tuple(labels.shape)} dtype={labels.dtype} "
-                      f"min={labels.min().item()} max={labels.max().item()} "
-                      f"unique~={labels.unique().numel()}")
-
-        # ---- 3) forward/backward/update
         optimizer.zero_grad(set_to_none=True)
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
-        if torch.isnan(loss) or torch.isinf(loss):
-            print("[ERROR] loss is NaN/Inf, stop.")
-            break
+        if int(is_rec) == 0:
+            inputs, labels = batch
+            inputs = inputs.to(device, dtype=torch.float32, non_blocking=True)
+            labels = labels.to(device, dtype=torch.long, non_blocking=True)
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+        else:
+            inputs, mask, labels, inputs_gt = batch
+            inputs = inputs.to(device, dtype=torch.float32, non_blocking=True)
+            mask = mask.to(device, dtype=torch.float32, non_blocking=True)
+            labels = labels.to(device, dtype=torch.long, non_blocking=True)
+            inputs_gt = inputs_gt.to(device, dtype=torch.float32, non_blocking=True)
+
+            outputs, x_recon = model(inputs, mask)
+            loss = criterion(outputs, labels) + float(alpha) * criterion_rec(x_recon, inputs_gt)
 
         loss.backward()
         optimizer.step()
@@ -107,16 +101,6 @@ def train_one_epoch(
         epoch_correct += (pred == labels).sum().item()
         num_samples += bs
 
-        # ---- 5) step 级日志（不用等一个 epoch）
-        if (step % log_every) == 0:
-            with torch.no_grad():
-                step_acc = (pred == labels).float().mean().item()
-            print(f"[train] step={step} loss={loss.item():.4f} acc={step_acc:.3f}")
-
-        # ---- 6) 快检：只跑前 max_steps 步
-        if (max_steps is not None) and (step + 1 >= max_steps):
-            print(f"[train] early stop at step {step+1}/{max_steps}")
-            break
 
     if num_samples == 0:
         return 0.0, 0.0
@@ -133,31 +117,36 @@ def train_one_epoch(
     return epoch_loss, epoch_accuracy
 
 
-def test_one_epoch(model, tensor_loader, criterion, device):
+def test_one_epoch(model, tensor_loader, criterion, device,
+                   is_rec: int = 0, criterion_rec=None, alpha: float = 0.5):
     model.eval()
-    test_acc = 0.0
-    test_loss = 0.0
-    num_samples = 0
+    total_loss, total_correct, num_samples = 0.0, 0, 0
 
     with torch.no_grad():
-        for data in tensor_loader:
-            inputs, labels = data
-            inputs = inputs.to(device)
-            labels = labels.to(device)
-            labels = labels.type(torch.LongTensor)
+        for batch in tensor_loader:
+            if int(is_rec) == 0:
+                inputs, labels = batch
+                inputs = inputs.to(device, dtype=torch.float32, non_blocking=True)
+                labels = labels.to(device, dtype=torch.long, non_blocking=True)
 
-            outputs = model(inputs)
-            outputs = outputs.type(torch.FloatTensor)
-            outputs.to(device)
-            loss = criterion(outputs, labels)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
 
-            predict_y = torch.argmax(outputs, dim=1)
-            test_acc += (predict_y == labels).sum().item()
-            test_loss += loss.item() * inputs.size(0)
-            num_samples += labels.size(0)
-        test_acc = test_acc / num_samples
-        test_loss = test_loss / num_samples
-        return test_loss, test_acc
+            else:
+                inputs, mask, labels, inputs_gt = batch
+                inputs = inputs.to(device, dtype=torch.float32, non_blocking=True)
+                mask = mask.to(device, dtype=torch.float32, non_blocking=True)
+                labels = labels.to(device, dtype=torch.long, non_blocking=True)
+                inputs_gt = inputs_gt.to(device, dtype=torch.float32, non_blocking=True)
+
+                outputs, x_recon = model(inputs, mask)
+                loss = criterion(outputs, labels) + float(alpha) * criterion_rec(x_recon,  inputs_gt)
+
+            bs = labels.size(0)
+            total_loss += loss.item() * bs
+            total_correct += (outputs.argmax(dim=1) == labels).sum().item()
+            num_samples += bs
+        return total_loss / num_samples, total_correct / num_samples
 
 
 def save_metrics_to_csv(filepath, history):
@@ -201,10 +190,14 @@ def main():
     # 新增两个参数，用于接收完整的保存目录
     parser.add_argument('--model_save_dir', required=True, type=str, help='模型检查点的完整保存目录。')
     parser.add_argument('--metrics_save_dir', required=True, type=str, help='性能指标文件的完整保存目录。')
+    parser.add_argument('--is_rec', type=int, default=0, choices=[0, 1], help='1: 重建+分类；0: 仅分类')
+    parser.add_argument('--rec_alpha', type=float, default=0.5, help='重建损失权重')
     args = parser.parse_args()
 
-    train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root,args.sample_rate, args.sample_method ,args.interpolation,args.use_energy_input ,args.use_mask_0 )
+    train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root,args.sample_rate, args.sample_method ,args.interpolation,args.use_energy_input ,args.use_mask_0 ,args.is_rec)
     criterion = nn.CrossEntropyLoss()
+    criterion_rec = nn.MSELoss(reduction='mean') if args.is_rec else None
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
@@ -247,10 +240,12 @@ def main():
     for epoch in range(1, train_epoch + 1):  # 循环从1开始，方便与epoch编号对应
         print(f"--- Epoch {epoch}/{train_epoch} ---")
 
-        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, device, optimizer)
+        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, device, optimizer,
+                                                is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha)
         print(f"Train -> Loss: {train_loss:.5f}, Accuracy: {train_acc:.4f}")
 
-        test_loss, test_acc = test_one_epoch(model, test_loader, criterion, device)
+        test_loss, test_acc = test_one_epoch(model, test_loader, criterion, device,
+                                             is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha)
         print(f"Test/Validation -> Loss: {test_loss:.5f}, Accuracy: {test_acc:.4f}")
 
         # ==================== 5. 新增：收集当前epoch的数据 ====================
