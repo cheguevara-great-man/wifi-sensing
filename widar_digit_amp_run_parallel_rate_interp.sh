@@ -12,20 +12,22 @@ DATASET_NAME="Widar_digit_amp"
 # 确保这里列出了你所有的 GPU ID
 GPU_LIST=(2)
 #GPU_LIST=(2 3 4 5 6 7)
-BASE_EXP_NAME="amp_rate_mask_rec_$(date +%Y%m%d_%H%M)"
-#BASE_EXP_NAME="amp_rate_interp_20260102_2336"
+#BASE_EXP_NAME="amp_rate_mask_rec_blk4_fftblk1$(date +%Y%m%d_%H%M)"
+BASE_EXP_NAME="amp_rate_mask$(date +%Y%m%d_%H%M)"
+#BASE_EXP_NAME="amp_rate_mask_rec_20260105_2047"
 
 use_energy_input=0
 use_mask_0=1
-is_rec=1
+is_rec=0
+csdc_blocks=4
 rec_alpha=0.5
 # 1. 采样方法 (3种)
 #SAMPLE_METHODS=(equidistant gaussian poisson)
-SAMPLE_METHODS=(equidistant)
+SAMPLE_METHODS=(equidistant poisson)
 
 # 2. 采样率 (6种)
 #SAMPLE_RATES=(0.05 0.1 0.2 0.5 1)
-SAMPLE_RATES=(0.1)
+SAMPLE_RATES=(0.05 0.1 0.2 0.5)
 
 # 3. 插值方法 (4种)
 #INTERPOLATION_METHODS=(linear cubic nearest)
@@ -125,6 +127,7 @@ while ((${#PENDING_TASKS[@]} > 0)); do
                 --metrics_save_dir "$metrics_dir" \
                 --is_rec "$is_rec" \
                 --rec_alpha "$rec_alpha" \
+                --csdc_blocks "$csdc_blocks" \
                 > "$log_file" 2>&1 &
 
             pid=$!

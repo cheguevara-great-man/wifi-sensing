@@ -452,7 +452,7 @@ class WidarDigit_RecCls(nn.Module):
 
     forward 返回：logits, x_recon_dc
     """
-    def __init__(self, classifier: nn.Module,scale_factor=2, attn_bias=False, proj_drop=0.):
+    def __init__(self, classifier: nn.Module,scale_factor=2, attn_bias=False, proj_drop=0.,csdc_blocks = 1):
         super().__init__()
         self.scale_factor = scale_factor
 
@@ -477,6 +477,7 @@ class WidarDigit_RecCls(nn.Module):
         self.fusion = FusionModule(in_ch=2)
         self.dc_layer = MaskedDataConsistencyLayer()
         #self.dc_layer = DataConsistencyLayer(tau=0.5, time_dim=2, batch_dim=0)
+        self.csdc_blocks = max(1, int(csdc_blocks))   # 至少1次，兼容老行为
 
         # 下面是分类部分，用的ResNet18=====
         #self.classifier = WidarDigit_ResNet18(num_classes=10)
@@ -494,7 +495,8 @@ class WidarDigit_RecCls(nn.Module):
         #x_hr0 = self.upsample(x_lr)  # (B,1,T_high,90)
         x_recon = x_lr
         # 2) 时域分支 & 频域分支
-        for _ in range(1):
+        n = self.csdc_blocks
+        for _ in range(n):
 
             x_time = self.time_module(x_recon)   # (B,1,T_high,90)
             x_freq = self.freq_module(x_recon)   # (B,1,T_high,90)
@@ -514,7 +516,7 @@ class WidarDigit_RecCls(nn.Module):
 # ======================================================================================
 # Factory functions (what you asked for)
 # ======================================================================================
-def _get_widar_model_base(model_name: str, Fdim: int, num_classes: int, T: int ,is_rec: int = 0):
+def _get_widar_model_base(model_name: str, Fdim: int, num_classes: int, T: int ,is_rec: int = 0,csdc_blocks:int =1):
     """
     统一的内部工厂函数，负责实例化模型。
     """
@@ -540,17 +542,17 @@ def _get_widar_model_base(model_name: str, Fdim: int, num_classes: int, T: int ,
         classifier = WidarDigit_LSTM(Fdim=Fdim, num_classes=num_classes, bidirectional=True)
     if int(is_rec) == 0:
         return classifier
-    return WidarDigit_RecCls(classifier=classifier)
-def Widar_digit_amp_model(model_name: str, num_classes: int = 10, T: int = 500,is_rec: int = 0):
+    return WidarDigit_RecCls(classifier=classifier,csdc_blocks = csdc_blocks)
+def Widar_digit_amp_model(model_name: str, num_classes: int = 10, T: int = 500,is_rec: int = 0,csdc_blocks:int =1):
     """
     For amp dataset: x is (B,1,T,90).
     """
-    model = _get_widar_model_base(model_name=model_name, Fdim=90, num_classes=num_classes, T=T,is_rec= is_rec)
+    model = _get_widar_model_base(model_name=model_name, Fdim=90, num_classes=num_classes, T=T,is_rec= is_rec,csdc_blocks=csdc_blocks)
     if model is None:
         raise ValueError(f"Unsupported model_name for Widar_digit_amp: {model_name}")
     return model
 
-def Widar_digit_conj_model(model_name: str, num_classes: int = 10, T: int = 500,is_rec: int = 0):
+def Widar_digit_conj_model(model_name: str, num_classes: int = 10, T: int = 500,is_rec: int = 0,csdc_blocks:int =1):
     """
     For conj dataset: x is (B,1,T,180).
     """

@@ -192,9 +192,10 @@ def main():
     parser.add_argument('--metrics_save_dir', required=True, type=str, help='性能指标文件的完整保存目录。')
     parser.add_argument('--is_rec', type=int, default=0, choices=[0, 1], help='1: 重建+分类；0: 仅分类')
     parser.add_argument('--rec_alpha', type=float, default=0.5, help='重建损失权重')
+    parser.add_argument('--csdc_blocks', type=int, default=1, help='重建blocks数量')
     args = parser.parse_args()
 
-    train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root,args.sample_rate, args.sample_method ,args.interpolation,args.use_energy_input ,args.use_mask_0 ,args.is_rec)
+    train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root,args.sample_rate, args.sample_method ,args.interpolation,args.use_energy_input ,args.use_mask_0 ,args.is_rec,args.csdc_blocks)
     criterion = nn.CrossEntropyLoss()
     criterion_rec = nn.MSELoss(reduction='mean') if args.is_rec else None
 
