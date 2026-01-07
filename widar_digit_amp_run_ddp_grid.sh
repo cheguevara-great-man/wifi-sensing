@@ -1,6 +1,47 @@
 #!/usr/bin/env bash
 # nohup ./widar_digit_amp_run_ddp_grid.sh > rate_run_ddp_grid.log 2>&1 &
 set -u
+FREEZE_COPY=1      # 1=复制sensefi目录到_runs后在副本里跑；0=直接当前目录跑
+AUTO_CLEAN=0       # 1=跑完自动删除副本目录；0=不自动删
+# ====== [新增] 冻结运行：复制整个 sensefi 目录到同级 _runs 下（排除指定子目录） ======
+# 防无限循环：第一次复制后会 export FROZEN_RUN=1，副本里再执行不会再次复制
+if [[ "${FREEZE_COPY:-1}" == "1" && -z "${FROZEN_RUN:-}" ]]; then
+  command -v rsync >/dev/null 2>&1 || { echo "❌ 缺少 rsync，请先安装"; exit 1; }
+  # 脚本所在目录就是你要复制的 sensefi 目录
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  PROJ_DIR="$SCRIPT_DIR"
+  PROJ_NAME="$(basename "$PROJ_DIR")"
+  # 副本放到 sensefi 同级目录的 _runs/ 下，这样 ../datasets/... 相对路径不变
+  RUN_PARENT="$(dirname "$PROJ_DIR")/_runs"
+  TS="$(date +%Y%m%d_%H%M%S)"
+  RUN_DIR="${RUN_PARENT}/${PROJ_NAME}_${TS}"
+  mkdir -p "$RUN_PARENT"
+  echo "✅ FREEZE_COPY=1: 复制目录 $PROJ_DIR -> $RUN_DIR"
+  rsync -a \
+    --exclude '.git/' \
+    --exclude 'Analysis/' \
+    --exclude 'cur/' \
+    --exclude 'deprecated/' \
+    --exclude 'img/' \
+    --exclude 'parrllel_gpu/' \
+    --exclude 'single_gpu/' \
+    --exclude 'tools/' \
+    --exclude '__pycache__/' --exclude '*.pyc' \
+    "$PROJ_DIR/" "$RUN_DIR/"
+  export FROZEN_RUN=1
+  export FROZEN_DIR="$RUN_DIR"
+  cd "$RUN_DIR"
+  # 方式1（推荐）：重跑“同名脚本”（不需要写死脚本名）
+  exec bash "./$(basename "$0")" "$@"
+  # 方式2（可选）：如果你非要写死脚本名，就用这一行替换上面那行：
+  # exec bash "./widar_digit_amp_run_ddp_grid.sh" "$@"
+fi
+# ======================================================================
+
+
+
+
+
 
 PYTHON_SCRIPT="run.py"
 DATASET_NAME="Widar_digit_amp"
@@ -59,6 +100,11 @@ echo "GPUS_PER_TASK=$GPUS_PER_TASK"
 echo "GLOBAL_BATCH_SIZE=$GLOBAL_BATCH_SIZE"
 echo "EXP=$BASE_EXP_NAME"
 echo "=============================================================="
+#
+
+
+
+
 
 # 清理可能残留的锁（上次异常退出会留下）
 # 你也可以注释掉这行，手动清理
@@ -152,7 +198,7 @@ while ((${#PENDING_TASKS[@]} > 0)); do
     metrics_dir="${DATASET_ROOT_DIR}/${DATASET_NAME}/EXP/${BASE_EXP_NAME}/Metrics/${exp_sub_dir}/${model_name}"
     log_dir="${DATASET_ROOT_DIR}/${DATASET_NAME}/EXP/${BASE_EXP_NAME}/Logs/${exp_sub_dir}/${model_name}"
     mkdir -p "$model_dir" "$metrics_dir" "$log_dir"
-    log_file="${log_dir}/training_gpus_${chosen_group// /_}.log"
+    log_file="${log_dir}/training.log"
 
     echo "[$(timestamp)] 🚀 启动任务: ${task} on GPUs [${chosen_group}]"
 
@@ -221,3 +267,8 @@ done
 echo "🎉 所有任务已提交，等待最后任务完成..."
 wait
 echo "✅ 全部完成！"
+
+if [[ "${AUTO_CLEAN:-0}" == "1" && "${FROZEN_RUN:-}" == "1" && -n "${FROZEN_DIR:-}" ]]; then
+  echo "🧹 AUTO_CLEAN=1: 删除冻结目录: $FROZEN_DIR"
+  rm -rf "$FROZEN_DIR"
+fi
