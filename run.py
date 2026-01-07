@@ -22,6 +22,19 @@ import argparse
 from util import load_data_n_model
 import time
 import csv # 1. 引入 csv 模块
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+
+
+def is_dist():
+    return dist.is_available() and dist.is_initialized()
+
+def get_rank():
+    return dist.get_rank() if is_dist() else 0
+
+def is_main():
+    return get_rank() == 0
 
 
 
@@ -104,7 +117,11 @@ def train_one_epoch(
 
     if num_samples == 0:
         return 0.0, 0.0
-
+    if is_dist():
+        t = torch.tensor([epoch_loss, epoch_correct, num_samples],
+                         device=device, dtype=torch.float64)
+        dist.all_reduce(t, op=dist.ReduceOp.SUM)
+        epoch_loss, epoch_correct, num_samples = t.tolist()
     epoch_loss = epoch_loss / num_samples
     epoch_accuracy = epoch_correct / num_samples
 
@@ -112,7 +129,7 @@ def train_one_epoch(
         with torch.no_grad():
             first_param_after = next(model.parameters()).detach()
             delta = (first_param_after - first_param_before).abs().mean().item()
-        print(f"[grad_check] first_param abs-mean delta = {delta:.6e}")
+        if is_main():print(f"[grad_check] first_param abs-mean delta = {delta:.6e}")
 
     return epoch_loss, epoch_accuracy
 
@@ -146,6 +163,13 @@ def test_one_epoch(model, tensor_loader, criterion, device,
             total_loss += loss.item() * bs
             total_correct += (outputs.argmax(dim=1) == labels).sum().item()
             num_samples += bs
+        if num_samples == 0:
+            return 0.0, 0.0
+        if is_dist():
+            t = torch.tensor([total_loss, float(total_correct), float(num_samples)],
+                             device=device, dtype=torch.float64)
+            dist.all_reduce(t, op=dist.ReduceOp.SUM)
+            total_loss, total_correct, num_samples = t.tolist()
         return total_loss / num_samples, total_correct / num_samples
 
 
@@ -173,9 +197,10 @@ def save_metrics_to_csv(filepath, history):
 def main():
     root = '../datasets/sense-fi/'
     if not os.path.isdir(root):
-        print(f"错误: 数据集根目录 '{root}' 未找到。")
-        print("请确认您的脚本（run.py）是否在 'code/sense-fi/' 文件夹下，")
-        print("并且 'datasets' 文件夹在 'code/' 的上一级目录。")
+        if is_main():
+            print(f"错误: 数据集根目录 '{root}' 未找到。")
+            print("请确认您的脚本（run.py）是否在 'code/sense-fi/' 文件夹下，")
+            print("并且 'datasets' 文件夹在 'code/' 的上一级目录。")
         return
     parser = argparse.ArgumentParser('WiFi Imaging Benchmark')
     parser.add_argument('--dataset', choices = ['UT_HAR_data','NTU-Fi-HumanID','NTU-Fi_HAR','Widar','Widar_digit_amp','Widar_digit_conj'])
@@ -193,15 +218,48 @@ def main():
     parser.add_argument('--is_rec', type=int, default=0, choices=[0, 1], help='1: 重建+分类；0: 仅分类')
     parser.add_argument('--rec_alpha', type=float, default=0.5, help='重建损失权重')
     parser.add_argument('--csdc_blocks', type=int, default=1, help='重建blocks数量')
-    args = parser.parse_args()
+    parser.add_argument('--global_batch_size', type=int, default=128, help='全局batch(所有GPU加起来)')
+    parser.add_argument('--num_workers_train', type=int, default=6)
+    parser.add_argument('--num_workers_test', type=int, default=2)
 
-    train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root,args.sample_rate, args.sample_method ,args.interpolation,args.use_energy_input ,args.use_mask_0 ,args.is_rec,args.csdc_blocks)
+    args = parser.parse_args()
+    # ---- DDP init (torchrun 会设置这些环境变量) ----
+    ddp = ("RANK" in os.environ) and ("WORLD_SIZE" in os.environ)
+    if ddp:
+        dist.init_process_group(backend="nccl", init_method="env://")
+        local_rank = int(os.environ["LOCAL_RANK"])
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        world_size = 1
+        rank = 0
+
+    # ---- 全局128 => 每卡 batch = 128/world_size ----
+    if args.global_batch_size % world_size != 0:
+        raise ValueError(f"global_batch_size={args.global_batch_size} 不能被 world_size={world_size} 整除")
+    per_gpu_bs = args.global_batch_size // world_size
+    train_loader, test_loader, model, train_epoch = load_data_n_model(
+        args.dataset, args.model, root,
+        args.sample_rate, args.sample_method, args.interpolation,
+        args.use_energy_input, args.use_mask_0,
+        args.is_rec, args.csdc_blocks,
+        batch_size=per_gpu_bs,
+        num_workers_train=args.num_workers_train,
+        num_workers_test=args.num_workers_test,
+        distributed=ddp, rank=rank, world_size=world_size
+    )
+
+    #train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root,args.sample_rate, args.sample_method ,args.interpolation,args.use_energy_input ,args.use_mask_0 ,args.is_rec,args.csdc_blocks)
     criterion = nn.CrossEntropyLoss()
     criterion_rec = nn.MSELoss(reduction='mean') if args.is_rec else None
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-
+    if ddp:
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
 
@@ -209,8 +267,9 @@ def main():
     # 现在 run.py 只负责确保目录存在，不再构建它
     os.makedirs(args.model_save_dir, exist_ok=True)
     os.makedirs(args.metrics_save_dir, exist_ok=True)
-    print(f"✅ 模型将保存至: {os.path.abspath(args.model_save_dir)}")
-    print(f"📊 性能指标将保存至: {os.path.abspath(args.metrics_save_dir)}")
+    if is_main():
+        print(f"✅ 模型将保存至: {os.path.abspath(args.model_save_dir)}")
+        print(f"📊 性能指标将保存至: {os.path.abspath(args.metrics_save_dir)}")
     # ================================================================
     # 2. 计算保存间隔和保存点
     num_saves = 4
@@ -224,7 +283,7 @@ def main():
     save_epochs = set(range(save_interval, train_epoch + 1, save_interval))
     # 确保最后一个epoch总是被保存
     save_epochs.add(train_epoch)
-    print(f"模型将会在以下Epoch结束时保存: {sorted(list(save_epochs))}")
+    if is_main():print(f"模型将会在以下Epoch结束时保存: {sorted(list(save_epochs))}")
     # ==========================================================
 
     # ==================== 4. 新增：初始化历史记录列表 ====================
@@ -239,15 +298,17 @@ def main():
     # --- 训练主循环 ---
     total_train_start = time.time()
     for epoch in range(1, train_epoch + 1):  # 循环从1开始，方便与epoch编号对应
-        print(f"--- Epoch {epoch}/{train_epoch} ---")
+        if ddp and hasattr(train_loader.sampler, "set_epoch"):
+            train_loader.sampler.set_epoch(epoch)
+        if is_main():print(f"--- Epoch {epoch}/{train_epoch} ---")
 
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, device, optimizer,
                                                 is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha)
-        print(f"Train -> Loss: {train_loss:.5f}, Accuracy: {train_acc:.4f}")
+        if is_main():print(f"Train -> Loss: {train_loss:.5f}, Accuracy: {train_acc:.4f}")
 
         test_loss, test_acc = test_one_epoch(model, test_loader, criterion, device,
                                              is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha)
-        print(f"Test/Validation -> Loss: {test_loss:.5f}, Accuracy: {test_acc:.4f}")
+        if is_main():print(f"Test/Validation -> Loss: {test_loss:.5f}, Accuracy: {test_acc:.4f}")
 
         # ==================== 5. 新增：收集当前epoch的数据 ====================
         train_history.append({'epoch': epoch, 'loss': train_loss, 'accuracy': train_acc})
@@ -262,22 +323,25 @@ def main():
             # 只有当 Epoch > 10 以后，才真正开始执行保存硬盘的操作
             if epoch > 20:
                 best_model_path = os.path.join(args.model_save_dir, 'best_model.pth')
-                torch.save(model.state_dict(), best_model_path)
-                print(f"🌟 新纪录！最佳模型已保存 (Acc: {best_test_acc:.4f})")
+                if is_main():
+                    state = model.module.state_dict() if ddp else model.state_dict()
+                    torch.save(state, best_model_path)
+                    print(f"🌟 新纪录！最佳模型已保存 (Acc: {best_test_acc:.4f})")
             else:
-                print(f"🌟 新纪录 (Acc: {best_test_acc:.4f}) - 训练初期暂不保存")
+                if is_main():print(f"🌟 新纪录 (Acc: {best_test_acc:.4f}) - 训练初期暂不保存")
 
         else:
             # 同样，前 10 个 Epoch 也不消耗 patience（宽容期）
             if epoch > 20:
                 patience_counter += 1
-                print(f"⚠️ 性能未提升 ({patience_counter}/{patience})")
+                if is_main():print(f"⚠️ 性能未提升 ({patience_counter}/{patience})")
 
         # 检查是否需要停止
         if patience_counter >= patience:
-            print(f"\n🛑 触发早停机制！测试集准确率已连续 {patience} 个 Epoch 未提升。")
-            print(f"   当前最佳准确率: {best_test_acc:.4f}")
-            print(f"   在 Epoch {epoch} 停止训练。")
+            if is_main():
+                print(f"\n🛑 触发早停机制！测试集准确率已连续 {patience} 个 Epoch 未提升。")
+                print(f"   当前最佳准确率: {best_test_acc:.4f}")
+                print(f"   在 Epoch {epoch} 停止训练。")
             break  # 跳出 for 循环
         # ===================================================================
 
@@ -288,20 +352,25 @@ def main():
             torch.save(model.state_dict(), model_save_path)'''
 
     total_train_end = time.time()
-    print("\n--- 训练完成 ---")
-    print(f"⏱️ 总训练耗时：{total_train_end - total_train_start:.2f} 秒")
+    if is_main():
+        print("\n--- 训练完成 ---")
+        print(f"⏱️ 总训练耗时：{total_train_end - total_train_start:.2f} 秒")
 
     # 使用新的目录参数来构建路径
     train_metrics_path = os.path.join(args.metrics_save_dir, 'train_metrics.csv')
     test_metrics_path = os.path.join(args.metrics_save_dir, 'test_metrics.csv')
 
-    print(f"📊 正在保存训练历史到: {train_metrics_path}")
-    save_metrics_to_csv(train_metrics_path, train_history)
+    if is_main():
+        print(f"📊 正在保存训练历史到: {train_metrics_path}")
+        save_metrics_to_csv(train_metrics_path, train_history)
 
-    print(f"📊 正在保存测试历史到: {test_metrics_path}")
-    save_metrics_to_csv(test_metrics_path, test_history)
+    if is_main():
+        print(f"📊 正在保存测试历史到: {test_metrics_path}")
+        save_metrics_to_csv(test_metrics_path, test_history)
 
     #print(f"💾 所有检查点已保存在目录: {args.model_save_dir}")
+    if ddp:
+        dist.destroy_process_group()
 
 if __name__ == "__main__":
     main()

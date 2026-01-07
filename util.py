@@ -7,16 +7,27 @@ import torch
 import os
 from Widar_digit_model import Widar_digit_amp_model, Widar_digit_conj_model
 from Widar_digit_model_block_fft import FreqDomainModuleBlockFFT
+from torch.utils.data.distributed import DistributedSampler
 
-def load_data_n_model(dataset_name, model_name, root,sample_rate=1.0,sample_method='uniform_nearest',interpolation_method='linear',use_energy_input = 1,use_mask_0 = 0,is_rec = 0,csdc_blocks=1):
-    classes = {'UT_HAR_data':7,'NTU-Fi-HumanID':14,'NTU-Fi_HAR':6,'Widar':22,'Widar_digit_amp': 10,'Widar_digit_conj': 10,}
+
+def load_data_n_model(dataset_name, model_name, root, sample_rate=1.0, sample_method='uniform_nearest',
+                      interpolation_method='linear', use_energy_input=1, use_mask_0=0, is_rec=0, csdc_blocks=1,
+                      batch_size=128, num_workers_train=6, num_workers_test=2,
+                      distributed=False, rank=0, world_size=1
+                      ):
+    classes = {'UT_HAR_data': 7, 'NTU-Fi-HumanID': 14, 'NTU-Fi_HAR': 6, 'Widar': 22, 'Widar_digit_amp': 10,
+               'Widar_digit_conj': 10, }
     if dataset_name == 'UT_HAR_data':
         print('using dataset: UT-HAR DATA')
-        data = UT_HAR_dataset(root, sample_rate=sample_rate, sample_method=sample_method,interpolation_method=interpolation_method, use_energy_input=use_energy_input, use_mask_0=use_mask_0)
-        train_set = torch.utils.data.TensorDataset(data['X_train'],data['y_train'])
-        test_set = torch.utils.data.TensorDataset(torch.cat((data['X_val'],data['X_test']),0),torch.cat((data['y_val'],data['y_test']),0))
-        train_loader = torch.utils.data.DataLoader(train_set,batch_size=256,shuffle=True, drop_last=True) # drop_last=True
-        test_loader = torch.utils.data.DataLoader(test_set,batch_size=512,shuffle=False)
+        data = UT_HAR_dataset(root, sample_rate=sample_rate, sample_method=sample_method,
+                              interpolation_method=interpolation_method, use_energy_input=use_energy_input,
+                              use_mask_0=use_mask_0)
+        train_set = torch.utils.data.TensorDataset(data['X_train'], data['y_train'])
+        test_set = torch.utils.data.TensorDataset(torch.cat((data['X_val'], data['X_test']), 0),
+                                                  torch.cat((data['y_val'], data['y_test']), 0))
+        train_loader = torch.utils.data.DataLoader(train_set, batch_size=256, shuffle=True,
+                                                   drop_last=True)  # drop_last=True
+        test_loader = torch.utils.data.DataLoader(test_set, batch_size=512, shuffle=False)
         if model_name == 'MLP':
             print("using model: MLP")
             model = UT_HAR_MLP()
@@ -206,9 +217,36 @@ def load_data_n_model(dataset_name, model_name, root,sample_rate=1.0,sample_meth
             use_mask_0=use_mask_0,
             is_rec=is_rec,
         )
-        train_loader = DataLoader(dataset=train_set, batch_size=128, shuffle=False, drop_last=True, num_workers=6, pin_memory=True, persistent_workers=True)
-        test_loader  = DataLoader(dataset=test_set,  batch_size=128, shuffle=False, drop_last=False, num_workers=2, pin_memory=True, persistent_workers=True)
+        train_sampler = None
+        test_sampler = None
+        if distributed:
+            train_sampler = DistributedSampler(
+                train_set, num_replicas=world_size, rank=rank, shuffle=False, drop_last=True
+            )
+            test_sampler = DistributedSampler(
+                test_set, num_replicas=world_size, rank=rank, shuffle=False, drop_last=False
+            )
 
+        train_loader = DataLoader(
+            dataset=train_set,
+            batch_size=batch_size,
+            shuffle=False,
+            sampler=train_sampler,
+            num_workers=num_workers_train,
+            pin_memory=True,
+            drop_last=True,
+            persistent_workers=(num_workers_train > 0)
+        )
+        test_loader = DataLoader(
+            dataset=test_set,
+            batch_size=batch_size,
+            shuffle=False,
+            sampler=test_sampler,
+            num_workers=num_workers_test,
+            pin_memory=True,
+            drop_last=False,
+            persistent_workers=(num_workers_test > 0)
+        )
         # infer T/F from the first sample
         item0  = train_set[0]
         x0 = item0[0]
@@ -240,8 +278,38 @@ def load_data_n_model(dataset_name, model_name, root,sample_rate=1.0,sample_meth
             use_mask_0=use_mask_0,
             is_rec=is_rec,
         )
-        train_loader = DataLoader(dataset=train_set, batch_size=128, shuffle=False, drop_last=True, num_workers=6, pin_memory=True, persistent_workers=True)
-        test_loader  = DataLoader(dataset=test_set,  batch_size=128, shuffle=False, drop_last=False, num_workers=2, pin_memory=True, persistent_workers=True)
+        train_sampler = None
+        test_sampler = None
+        if distributed:
+            train_sampler = DistributedSampler(
+                train_set, num_replicas=world_size, rank=rank, shuffle=False, drop_last=True
+            )
+            test_sampler = DistributedSampler(
+                test_set, num_replicas=world_size, rank=rank, shuffle=False, drop_last=False
+            )
+
+        train_loader = DataLoader(
+            dataset=train_set,
+            batch_size=batch_size,
+            shuffle=False,
+            sampler=train_sampler,
+            num_workers=num_workers_train,
+            pin_memory=True,
+            drop_last=True,
+            persistent_workers=(num_workers_train > 0)
+        )
+        test_loader = DataLoader(
+            dataset=test_set,
+            batch_size=batch_size,
+            shuffle=False,
+            sampler=test_sampler,
+            num_workers=num_workers_test,
+            pin_memory=True,
+            drop_last=False,
+            persistent_workers=(num_workers_test > 0)
+        )
+        # train_loader = DataLoader(dataset=train_set, batch_size=128, shuffle=False, drop_last=True, num_workers=6, pin_memory=True, persistent_workers=True)
+        # test_loader  = DataLoader(dataset=test_set,  batch_size=128, shuffle=False, drop_last=False, num_workers=2, pin_memory=True, persistent_workers=True)
 
         item0  = train_set[0]
         x0 = item0[0]

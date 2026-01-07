@@ -13,25 +13,25 @@ DATASET_NAME="Widar_digit_amp"
 GPU_LIST=(2)
 #GPU_LIST=(2 3 4 5 6 7)
 #BASE_EXP_NAME="amp_rate_mask_rec_blk4_fftblk1$(date +%Y%m%d_%H%M)"
-BASE_EXP_NAME="amp_rate_mask$(date +%Y%m%d_%H%M)"
-#BASE_EXP_NAME="amp_rate_mask_rec_20260105_2047"
+#BASE_EXP_NAME="amp_rate_mask$(date +%Y%m%d_%H%M)"
+BASE_EXP_NAME="conj_rate_interp_20260104_0043"
 
 use_energy_input=0
-use_mask_0=1
+use_mask_0=0
 is_rec=0
 csdc_blocks=4
 rec_alpha=0.5
 # 1. 采样方法 (3种)
 #SAMPLE_METHODS=(equidistant gaussian poisson)
-SAMPLE_METHODS=(equidistant poisson)
+SAMPLE_METHODS=(equidistant)
 
 # 2. 采样率 (6种)
 #SAMPLE_RATES=(0.05 0.1 0.2 0.5 1)
-SAMPLE_RATES=(0.05 0.1 0.2 0.5)
+SAMPLE_RATES=(0.5)
 
 # 3. 插值方法 (4种)
 #INTERPOLATION_METHODS=(linear cubic nearest)
-INTERPOLATION_METHODS=(linear)
+INTERPOLATION_METHODS=(linear cubic nearest)
 
 # 4. 模型 (5种) - 显存预估仅作参考，本脚本强制分配
 declare -A MODEL_MEM_REQUIREMENTS
@@ -150,7 +150,7 @@ while ((${#PENDING_TASKS[@]} > 0)); do
     # 如果這一轮没启动任何任务，说明所有卡都忙，休息一会儿
     if ! $launched_in_this_pass; then
         echo "[$(date '+%H:%M:%S')] 💤 所有 GPU 都在忙，等待任务完成... (剩余任务: ${#PENDING_TASKS[@]})"
-        sleep 60
+        sleep 30
     fi
 done
 
