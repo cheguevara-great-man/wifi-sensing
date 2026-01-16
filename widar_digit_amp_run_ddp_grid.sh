@@ -12,10 +12,11 @@ if [[ "${FREEZE_COPY:-1}" == "1" && -z "${FROZEN_RUN:-}" ]]; then
   PROJ_DIR="$SCRIPT_DIR"
   PROJ_NAME="$(basename "$PROJ_DIR")"
   # 副本放到 sensefi 同级目录的 _runs/ 下，这样 ../datasets/... 相对路径不变
-  RUN_PARENT="$(dirname "$PROJ_DIR")/_runs"
+  RUN_PARENT="$(dirname "$PROJ_DIR")"
   TS="$(date +%Y%m%d_%H%M%S)"
-  RUN_DIR="${RUN_PARENT}/${PROJ_NAME}_${TS}"
-  mkdir -p "$RUN_PARENT"
+  RUN_DIR="${RUN_PARENT}/${PROJ_NAME}_run_${TS}"
+
+  #mkdir -p "$RUN_PARENT"
   echo "✅ FREEZE_COPY=1: 复制目录 $PROJ_DIR -> $RUN_DIR"
   rsync -a \
     --exclude '.git/' \
@@ -37,18 +38,15 @@ if [[ "${FREEZE_COPY:-1}" == "1" && -z "${FROZEN_RUN:-}" ]]; then
   # exec bash "./widar_digit_amp_run_ddp_grid.sh" "$@"
 fi
 # ======================================================================
-
-
-
-
-
-
 PYTHON_SCRIPT="run.py"
-DATASET_NAME="Widar_digit_amp"
-DATASET_ROOT_DIR="../datasets/sense-fi"
 
+
+#DATASET_NAME="Widar_digit_conj"
+DATASET_NAME="Widar_digit_amp"
+
+DATASET_ROOT_DIR="../datasets/sense-fi"
 # 你希望使用的物理 GPU（顺序决定分组方式）
-GPU_LIST=(0 1)           # 例：两卡
+GPU_LIST=(4 5)           # 例：两卡
 #GPU_LIST=(0 1 2 3)      # 例：四卡
 
 # 每个任务使用几张 GPU：1=单卡；2=两卡DDP；4=四卡DDP
@@ -57,16 +55,22 @@ GPUS_PER_TASK=2
 # 全局 batch（所有GPU加起来）
 GLOBAL_BATCH_SIZE=128
 
-BASE_EXP_NAME="amp_rate_mask_rec_blk3_$(date +%Y%m%d_%H%M%S)_g${GPUS_PER_TASK}"
-
+#BASE_EXP_NAME="amp_rate_mask_rec_blk3_$(date +%Y%m%d_%H%M%S)"
+#BASE_EXP_NAME="conj_rate_interp_20260104_0043"
+BASE_EXP_NAME="amp_rate_mask_rec_blk3_fftblk1_$(date +%Y%m%d_%H%M%S)"
 use_energy_input=0
 use_mask_0=1
 is_rec=1
 csdc_blocks=3
 rec_alpha=0.5
 
-SAMPLE_METHODS=(equidistant poisson)
-SAMPLE_RATES=(0.05 0.1 0.2 0.5)
+#SAMPLE_METHODS=(equidistant gaussian poisson)
+SAMPLE_METHODS=(poisson)
+
+SAMPLE_RATES=(0.05 0.1 0.2 0.5 1)
+#SAMPLE_RATES=(0.0125 0.025 0.05 0.1 0.125 0.25 0.5 1)
+
+#INTERPOLATION_METHODS=(linear cubic nearest)
 INTERPOLATION_METHODS=(linear)
 MODELS=(ResNet18)
 

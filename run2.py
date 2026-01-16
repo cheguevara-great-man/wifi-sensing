@@ -1,3 +1,4 @@
+#本文件为为了测试NMSE而修改的run.py版本，其他部分与run.py相同
 import os  # 引入 os 模块
 # ==================== 解决 num_workers 和 numpy 的冲突 ====================
 #为了设置进程为单线程，减少cpu占用
@@ -26,6 +27,17 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 
+def nmse_miss_num_den(x_hat, x_gt, mask, eps=1e-12):
+    """
+    NMSE_miss = ||(1-M)⊙(x_hat-x_gt)||_F^2 / (||(1-M)⊙x_gt||_F^2 + eps)
+    这里 mask == M: 观测点为1，缺失点为0
+    返回：num, den (torch.float64 标量张量)
+    """
+    miss = (1.0 - mask)
+    diff = (x_hat - x_gt) * miss
+    num = (diff * diff).sum(dtype=torch.float64)
+    den = ((x_gt * miss) * (x_gt * miss)).sum(dtype=torch.float64)
+    return num, den + eps
 
 def is_dist():
     return dist.is_available() and dist.is_initialized()
@@ -135,9 +147,11 @@ def train_one_epoch(
 
 
 def test_one_epoch(model, tensor_loader, criterion, device,
-                   is_rec: int = 0, criterion_rec=None, alpha: float = 0.5):
+                   is_rec: int = 0, criterion_rec=None, alpha: float = 0.5,compute_nmse_miss: bool = True):
     model.eval()
     total_loss, total_correct, num_samples = 0.0, 0, 0
+    nmse_num = torch.zeros(1, device=device, dtype=torch.float64)
+    nmse_den = torch.zeros(1, device=device, dtype=torch.float64)
 
     with torch.no_grad():
         for batch in tensor_loader:
@@ -157,6 +171,11 @@ def test_one_epoch(model, tensor_loader, criterion, device,
                 inputs_gt = inputs_gt.to(device, dtype=torch.float32, non_blocking=True)
 
                 outputs, x_recon = model(inputs, mask)
+                if compute_nmse_miss:
+                    num_i, den_i = nmse_miss_num_den(x_recon, inputs_gt, mask)
+                    nmse_num += num_i
+                    nmse_den += den_i
+
                 loss = criterion(outputs, labels) + float(alpha) * criterion_rec(x_recon,  inputs_gt)
 
             bs = labels.size(0)
@@ -170,7 +189,20 @@ def test_one_epoch(model, tensor_loader, criterion, device,
                              device=device, dtype=torch.float64)
             dist.all_reduce(t, op=dist.ReduceOp.SUM)
             total_loss, total_correct, num_samples = t.tolist()
-        return total_loss / num_samples, total_correct / num_samples
+
+            if compute_nmse_miss:
+                dist.all_reduce(nmse_num, op=dist.ReduceOp.SUM)
+                dist.all_reduce(nmse_den, op=dist.ReduceOp.SUM)
+
+        test_loss = total_loss / num_samples
+        test_acc  = total_correct / num_samples
+
+        if compute_nmse_miss:
+            nmse_miss = (nmse_num / nmse_den).item()
+            return test_loss, test_acc, nmse_miss
+        else:
+            return test_loss, test_acc
+
 
 
 def save_metrics_to_csv(filepath, history):
@@ -221,6 +253,8 @@ def main():
     parser.add_argument('--global_batch_size', type=int, default=128, help='全局batch(所有GPU加起来)')
     parser.add_argument('--num_workers_train', type=int, default=6)
     parser.add_argument('--num_workers_test', type=int, default=2)
+    parser.add_argument('--eval_only', action='store_true', help='只跑测试，不训练')
+    parser.add_argument('--ckpt_path', type=str, default='', help='要加载的模型权重路径（默认用 model_save_dir/best_model.pth）')
 
     args = parser.parse_args()
     # ---- DDP init (torchrun 会设置这些环境变量) ----
@@ -258,9 +292,46 @@ def main():
 
     #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
+    model.to(device)
     if ddp:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+
+    # ===== eval only: load checkpoint and run test =====
+    if args.eval_only:
+        ckpt_path = args.ckpt_path.strip()
+        if ckpt_path == '':
+            ckpt_path = os.path.join(args.model_save_dir, 'best_model.pth')
+        if is_main():
+            print(f"🧪 Eval-only mode. Loading ckpt from: {ckpt_path}")
+
+        state = torch.load(ckpt_path, map_location='cpu')
+        if ddp:
+            model.module.load_state_dict(state, strict=True)
+        else:
+            model.load_state_dict(state, strict=True)
+
+        # 只在 is_rec=1 且 dataloader 提供 (inputs, mask, labels, inputs_gt) 时才有意义
+        out = test_one_epoch(model, test_loader, criterion, device,
+                             is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha,
+                             compute_nmse_miss=True)
+
+        if len(out) == 3:
+            test_loss, test_acc, nmse_miss = out
+            if is_main():
+                print(f"[Eval] Loss={test_loss:.5f}, Acc={test_acc:.4f}, NMSE_miss={nmse_miss:.6e}")
+        else:
+            test_loss, test_acc = out
+            if is_main():
+                print(f"[Eval] Loss={test_loss:.5f}, Acc={test_acc:.4f}")
+                print("⚠️ NMSE_miss 未计算：需要 --is_rec=1 且 test batch 含 mask 和 gt。")
+
+        if ddp:
+            dist.destroy_process_group()
+        return
+
+    # ===== training mode =====
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
 
 
     # --- 目录创建 ---

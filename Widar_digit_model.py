@@ -464,7 +464,7 @@ class WidarDigit_RecCls(nn.Module):
         )
 
         # 时域 / 频域模块
-        self.time_module = TimeDomainModule(
+        '''self.time_module = TimeDomainModule(
             in_ch=1, hidden_ch=16,
             attn_bias=attn_bias, proj_drop=proj_drop
         )
@@ -475,13 +475,36 @@ class WidarDigit_RecCls(nn.Module):
 
         # 融合 + DC
         self.fusion = FusionModule(in_ch=2)
-        self.dc_layer = MaskedDataConsistencyLayer()
+        self.dc_layer = MaskedDataConsistencyLayer()'''
         #self.dc_layer = DataConsistencyLayer(tau=0.5, time_dim=2, batch_dim=0)
+        #修改为不同阶段用不同参数
         self.csdc_blocks = max(1, int(csdc_blocks))   # 至少1次，兼容老行为
+
+        # === 修改开始：使用 ModuleList 创建 N 个独立的模块 ===
+        self.time_modules = nn.ModuleList([
+            TimeDomainModule(in_ch=1, hidden_ch=16, attn_bias=attn_bias, proj_drop=proj_drop)
+            for _ in range(self.csdc_blocks)
+        ])
+
+        self.freq_modules = nn.ModuleList([
+            FreqDomainModule(hidden_ch=8, attn_bias=attn_bias, proj_drop=proj_drop)
+            for _ in range(self.csdc_blocks)
+        ])
+
+        self.fusions = nn.ModuleList([
+            FusionModule(in_ch=2)
+            for _ in range(self.csdc_blocks)
+        ])
+
+        self.dc_layer = MaskedDataConsistencyLayer()  # DC层没有参数，可以复用
+        # === 修改结束 ===
+
+        self.classifier = classifier
+
 
         # 下面是分类部分，用的ResNet18=====
         #self.classifier = WidarDigit_ResNet18(num_classes=10)
-        self.classifier = classifier
+        #self.classifier = classifier
 
 
     def forward(self, x_lr, mask):
@@ -495,7 +518,7 @@ class WidarDigit_RecCls(nn.Module):
         #x_hr0 = self.upsample(x_lr)  # (B,1,T_high,90)
         x_recon = x_lr
         # 2) 时域分支 & 频域分支
-        n = self.csdc_blocks
+        '''n = self.csdc_blocks
         for _ in range(n):
 
             x_time = self.time_module(x_recon)   # (B,1,T_high,90)
@@ -510,7 +533,22 @@ class WidarDigit_RecCls(nn.Module):
         #这一步是分类，backbone用的是ResNet18
         logits = self.classifier(x_recon)
         #return logits    #仅返回分类的结果
-        return logits, x_recon    #返回重建和分类的结果
+        return logits, x_recon    #返回重建和分类的结果'''
+        # 修改后：使用多个独立模块
+        for i in range(self.csdc_blocks):
+            # 取出第 i 阶段独有的模块
+            time_mod = self.time_modules[i]
+            freq_mod = self.freq_modules[i]
+            fuse_mod = self.fusions[i]
+
+            x_time = time_mod(x_recon)
+            x_freq = freq_mod(x_recon)
+            x_fused = fuse_mod(x_time, x_freq)
+
+            x_recon = self.dc_layer(x_fused, x_lr, mask)
+
+        logits = self.classifier(x_recon)
+        return logits, x_recon
 
 
 # ======================================================================================

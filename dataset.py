@@ -202,7 +202,7 @@ def resample_signal_data(x, sample_rate, sample_method, use_mask_0, interpolatio
                       对于 CSI_Dataset 是 (C, 500), 对于 UT_HAR 是 (90, 250)。
         sample_rate (float): 采样率 (0.0 - 1.0)。
         sample_method (str): 'uniform_nearest', 'equidistant', 'gaussian', 'poisson'。
-        use_mask_0 (bool): 是否使用 Mask 模式。
+        use_mask_0 (int): 是否使用 Mask 模式。
         interpolation_method (str): 插值方法。
 
     Returns:
@@ -258,11 +258,13 @@ def resample_signal_data(x, sample_rate, sample_method, use_mask_0, interpolatio
     mask[pick_indices_int,:] = 1.0
 
     # ================= 2. Mask 或 插值 =================
-    if use_mask_0:
+    if use_mask_0==1:
         # --- 模式 A: 掩码 (Masking) ---
         x_sparse = np.zeros_like(x)
         x_sparse[ pick_indices_int,:] = x[pick_indices_int,:]
         x = x_sparse
+    elif use_mask_0==2:
+        x = x[pick_indices_int,:]
     else:
         # --- 模式 B: 降采样 + 插值 (Resample + Interpolate) ---
         # 1. 先取出已知点
@@ -271,10 +273,15 @@ def resample_signal_data(x, sample_rate, sample_method, use_mask_0, interpolatio
         # 2. 准备坐标
         x_known = pick_indices_int  # 已知点的 X 坐标
         x_new = np.arange(original_len)  # 需要恢复的目标 X 坐标 (0 到 original_len-1)
-        x_upsampled = np.zeros_like(x, dtype=float)
-
+        #x_upsampled = np.zeros_like(x, dtype=float)
+        y_known = x_downsampled
+        if interpolation_method in ['linear', 'nearest', 'cubic']:
+            interp_kind = interpolation_method
+        f_interp = interp1d(x_known, y_known, kind=interp_kind,
+                                axis=0, bounds_error=False, fill_value="extrapolate")
+        x_upsampled = f_interp(x_new)
         # 3. 对每个通道独立插值
-        for i in range(num_channels):
+        '''for i in range(num_channels):
             y_known = x_downsampled[:,i]
 
             if interpolation_method == 'linear':
@@ -302,6 +309,7 @@ def resample_signal_data(x, sample_rate, sample_method, use_mask_0, interpolatio
             elif interpolation_method == 'akima':
                 akima_func = Akima1DInterpolator(x_known, y_known)
                 x_upsampled[:, i] = akima_func(x_new, extrapolate=True)
+            '''
         x = x_upsampled
     if is_rec:
         return x, mask
@@ -360,7 +368,7 @@ class WidarDigitShardDataset(Dataset):
         self.sample_rate = float(sample_rate)
         self.sample_method = sample_method
         self.interpolation_method = interpolation_method
-        self.use_mask_0 = bool(use_mask_0)
+        self.use_mask_0 = int(use_mask_0)
 
         if variant not in ("amp", "conj"):
             raise ValueError("variant must be 'amp' or 'conj'")
@@ -521,6 +529,7 @@ def Widar_digit_amp_dataset(
 ):
     return WidarDigitShardDataset(
         root_dir= "/home/cxy/data/code/datasets/sense-fi/Widar_digit", variant="amp", split=split,
+        #root_dir="/home/cxy/data/code/datasets/sense-fi/Widar_digit_1000", variant="amp", split=split,
         sample_rate=sample_rate, sample_method=sample_method,
         interpolation_method=interpolation_method, use_mask_0=use_mask_0,is_rec=is_rec,
         **kwargs
@@ -539,6 +548,7 @@ def Widar_digit_conj_dataset(
 ):
     return WidarDigitShardDataset(
         root_dir= "/home/cxy/data/code/datasets/sense-fi/Widar_digit", variant="conj", split=split,
+        #root_dir="/home/cxy/data/code/datasets/sense-fi/Widar_digit_1000", variant="conj", split=split,
         sample_rate=sample_rate, sample_method=sample_method,
         interpolation_method=interpolation_method, use_mask_0=use_mask_0,is_rec=is_rec,
         **kwargs
