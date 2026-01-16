@@ -12,7 +12,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 def load_data_n_model(dataset_name, model_name, root, sample_rate=1.0, sample_method='uniform_nearest',
                       interpolation_method='linear', use_energy_input=1, use_mask_0=0, is_rec=0, csdc_blocks=1,
-                      batch_size=128, num_workers_train=6, num_workers_test=2,
+                      rec_model="csdc", batch_size=128, num_workers_train=6, num_workers_test=2,
                       distributed=False, rank=0, world_size=1
                       ):
     classes = {'UT_HAR_data': 7, 'NTU-Fi-HumanID': 14, 'NTU-Fi_HAR': 6, 'Widar': 22, 'Widar_digit_amp': 10,
@@ -254,7 +254,14 @@ def load_data_n_model(dataset_name, model_name, root, sample_rate=1.0, sample_me
 
         train_epoch = 200
 
-        model = Widar_digit_amp_model(model_name, num_classes=10, T=T,is_rec=is_rec,csdc_blocks=csdc_blocks)
+        model = Widar_digit_amp_model(
+            model_name,
+            num_classes=10,
+            T=T,
+            is_rec=is_rec,
+            csdc_blocks=csdc_blocks,
+            rec_model=rec_model,
+        )
         #分块fft
         #model.freq_module = FreqDomainModuleBlockFFT(hidden_ch=8, block_ratio=0.25)
         return train_loader,test_loader,model,train_epoch
@@ -317,7 +324,14 @@ def load_data_n_model(dataset_name, model_name, root, sample_rate=1.0, sample_me
 
         train_epoch = 200
 
-        model = Widar_digit_conj_model(model_name, num_classes=10, T=T,is_rec=is_rec)
+        model = Widar_digit_conj_model(
+            model_name,
+            num_classes=10,
+            T=T,
+            is_rec=is_rec,
+            csdc_blocks=csdc_blocks,
+            rec_model=rec_model,
+        )
 
         return train_loader,test_loader,model,train_epoch
 

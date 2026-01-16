@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn import init
 
 # ======================================================================================
 # Widar3.0 Digit models (for your Widar_digit_amp / Widar_digit_conj datasets)
@@ -552,9 +553,75 @@ class WidarDigit_RecCls(nn.Module):
 
 
 # ======================================================================================
+# ISTA-Net style reconstruction + classification
+# ======================================================================================
+class ISTANetBlock(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lambda_step = nn.Parameter(torch.tensor(0.5))
+        self.soft_thr = nn.Parameter(torch.tensor(0.01))
+
+        self.conv1_forward = nn.Parameter(init.xavier_normal_(torch.empty(32, 1, 3, 3)))
+        self.conv2_forward = nn.Parameter(init.xavier_normal_(torch.empty(32, 32, 3, 3)))
+        self.conv1_backward = nn.Parameter(init.xavier_normal_(torch.empty(32, 32, 3, 3)))
+        self.conv2_backward = nn.Parameter(init.xavier_normal_(torch.empty(1, 32, 3, 3)))
+
+    def forward(self, x, x_input, mask):
+        # data consistency update (masked)
+        x = x + self.lambda_step * mask * (x_input - x)
+
+        x_input_2d = x
+        x = F.conv2d(x_input_2d, self.conv1_forward, padding=1)
+        x = F.relu(x, inplace=True)
+        x_forward = F.conv2d(x, self.conv2_forward, padding=1)
+
+        x = torch.mul(torch.sign(x_forward), F.relu(torch.abs(x_forward) - self.soft_thr))
+
+        x = F.conv2d(x, self.conv1_backward, padding=1)
+        x = F.relu(x, inplace=True)
+        x_backward = F.conv2d(x, self.conv2_backward, padding=1)
+        x_pred = x_backward
+
+        x = F.conv2d(x_forward, self.conv1_backward, padding=1)
+        x = F.relu(x, inplace=True)
+        x_est = F.conv2d(x, self.conv2_backward, padding=1)
+        symloss = x_est - x_input_2d
+        return x_pred, symloss
+
+
+class WidarDigit_ISTANetRecCls(nn.Module):
+    """
+    ISTA-Net style reconstruction + classification.
+    x_lr: (B,1,T,F), mask: (B,1,T,F)
+    """
+    def __init__(self, classifier: nn.Module, layer_num: int = 9):
+        super().__init__()
+        self.layer_num = int(layer_num)
+        self.blocks = nn.ModuleList([ISTANetBlock() for _ in range(self.layer_num)])
+        self.classifier = classifier
+
+    def forward(self, x_lr, mask):
+        x_recon = x_lr
+        layers_sym = []
+        for block in self.blocks:
+            x_recon, layer_sym = block(x_recon, x_lr, mask)
+            layers_sym.append(layer_sym)
+        logits = self.classifier(x_recon)
+        return logits, x_recon
+
+
+# ======================================================================================
 # Factory functions (what you asked for)
 # ======================================================================================
-def _get_widar_model_base(model_name: str, Fdim: int, num_classes: int, T: int ,is_rec: int = 0,csdc_blocks:int =1):
+def _get_widar_model_base(
+    model_name: str,
+    Fdim: int,
+    num_classes: int,
+    T: int,
+    is_rec: int = 0,
+    csdc_blocks: int = 1,
+    rec_model: str = "csdc",
+):
     """
     统一的内部工厂函数，负责实例化模型。
     """
@@ -580,21 +647,56 @@ def _get_widar_model_base(model_name: str, Fdim: int, num_classes: int, T: int ,
         classifier = WidarDigit_LSTM(Fdim=Fdim, num_classes=num_classes, bidirectional=True)
     if int(is_rec) == 0:
         return classifier
-    return WidarDigit_RecCls(classifier=classifier,csdc_blocks = csdc_blocks)
-def Widar_digit_amp_model(model_name: str, num_classes: int = 10, T: int = 500,is_rec: int = 0,csdc_blocks:int =1):
+    rec_name = rec_model.strip().lower()
+    if rec_name == "istanet":
+        return WidarDigit_ISTANetRecCls(classifier=classifier, layer_num=csdc_blocks)
+    return WidarDigit_RecCls(classifier=classifier, csdc_blocks=csdc_blocks)
+
+
+def Widar_digit_amp_model(
+    model_name: str,
+    num_classes: int = 10,
+    T: int = 500,
+    is_rec: int = 0,
+    csdc_blocks: int = 1,
+    rec_model: str = "csdc",
+):
     """
     For amp dataset: x is (B,1,T,90).
     """
-    model = _get_widar_model_base(model_name=model_name, Fdim=90, num_classes=num_classes, T=T,is_rec= is_rec,csdc_blocks=csdc_blocks)
+    model = _get_widar_model_base(
+        model_name=model_name,
+        Fdim=90,
+        num_classes=num_classes,
+        T=T,
+        is_rec=is_rec,
+        csdc_blocks=csdc_blocks,
+        rec_model=rec_model,
+    )
     if model is None:
         raise ValueError(f"Unsupported model_name for Widar_digit_amp: {model_name}")
     return model
 
-def Widar_digit_conj_model(model_name: str, num_classes: int = 10, T: int = 500,is_rec: int = 0,csdc_blocks:int =1):
+def Widar_digit_conj_model(
+    model_name: str,
+    num_classes: int = 10,
+    T: int = 500,
+    is_rec: int = 0,
+    csdc_blocks: int = 1,
+    rec_model: str = "csdc",
+):
     """
     For conj dataset: x is (B,1,T,180).
     """
-    model = _get_widar_model_base(model_name=model_name, Fdim=180, num_classes=num_classes, T=T,is_rec= is_rec)
+    model = _get_widar_model_base(
+        model_name=model_name,
+        Fdim=180,
+        num_classes=num_classes,
+        T=T,
+        is_rec=is_rec,
+        csdc_blocks=csdc_blocks,
+        rec_model=rec_model,
+    )
     if model is None:
         raise ValueError(f"Unsupported model_name for Widar_digit_conj: {model_name}")
     return model
