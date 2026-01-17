@@ -57,21 +57,24 @@ GLOBAL_BATCH_SIZE=128
 
 #BASE_EXP_NAME="amp_rate_mask_rec_blk3_$(date +%Y%m%d_%H%M%S)"
 #BASE_EXP_NAME="conj_rate_interp_20260104_0043"
-BASE_EXP_NAME="amp_rate_mask_rec_blk3_fftblk1_$(date +%Y%m%d_%H%M%S)"
+BASE_EXP_NAME="amp_rate_mask_rec_blk4_fftblock1_$(date +%Y%m%d_%H%M%S)"
 use_energy_input=0
 use_mask_0=1
 is_rec=1
-csdc_blocks=3
+#istanet csdc
+rec_model_method=csdc
+csdc_blocks=4
 rec_alpha=0.5
 
 #SAMPLE_METHODS=(equidistant gaussian poisson)
-SAMPLE_METHODS=(poisson)
+SAMPLE_METHODS=(equidistant)
 
-SAMPLE_RATES=(0.05 0.1 0.2 0.5 1)
+SAMPLE_RATES=(0.05 0.1 0.2 0.5)
 #SAMPLE_RATES=(0.0125 0.025 0.05 0.1 0.125 0.25 0.5 1)
 
 #INTERPOLATION_METHODS=(linear cubic nearest)
 INTERPOLATION_METHODS=(linear)
+
 MODELS=(ResNet18)
 
 export OMP_NUM_THREADS=1
@@ -229,6 +232,7 @@ while ((${#PENDING_TASKS[@]} > 0)); do
           --is_rec "$is_rec" \
           --rec_alpha "$rec_alpha" \
           --csdc_blocks "$csdc_blocks" \
+          --rec_model "$rec_model_method" \
           --global_batch_size "$GLOBAL_BATCH_SIZE" \
           > "$log_file" 2>&1
       else
@@ -246,6 +250,7 @@ while ((${#PENDING_TASKS[@]} > 0)); do
           --is_rec "$is_rec" \
           --rec_alpha "$rec_alpha" \
           --csdc_blocks "$csdc_blocks" \
+          --rec_model "$rec_model_method" \
           --global_batch_size "$GLOBAL_BATCH_SIZE" \
           > "$log_file" 2>&1
       fi

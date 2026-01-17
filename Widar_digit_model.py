@@ -650,7 +650,8 @@ def _get_widar_model_base(
     rec_name = rec_model.strip().lower()
     if rec_name == "istanet":
         return WidarDigit_ISTANetRecCls(classifier=classifier, layer_num=csdc_blocks)
-    return WidarDigit_RecCls(classifier=classifier, csdc_blocks=csdc_blocks)
+    elif rec_name == "csdc":
+        return WidarDigit_RecCls(classifier=classifier, csdc_blocks=csdc_blocks)
 
 
 def Widar_digit_amp_model(
