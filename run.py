@@ -24,7 +24,7 @@ import time
 import csv # 1. 引入 csv 模块
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-
+from torch.cuda.amp import autocast  # 记得加上这个 import
 
 
 def is_dist():
@@ -69,6 +69,7 @@ def is_main():
     epoch_loss = epoch_loss / num_samples
     epoch_accuracy = epoch_accuracy / num_samples
     return epoch_loss, epoch_accuracy'''
+use_amp = True  # 控制是否启用 AMP（默认启用）
 
 def train_one_epoch(
     model, tensor_loader, criterion, device, optimizer,
@@ -92,7 +93,11 @@ def train_one_epoch(
             inputs, labels = batch
             inputs = inputs.to(device, dtype=torch.float32, non_blocking=True)
             labels = labels.to(device, dtype=torch.long, non_blocking=True)
-            outputs = model(inputs)
+            '''outputs = model(inputs)
+            loss = criterion(outputs, labels)'''
+            # 使用 autocast 来启用 bf16
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                outputs = model(inputs)
             loss = criterion(outputs, labels)
         else:
             inputs, mask, labels, inputs_gt = batch
@@ -100,10 +105,22 @@ def train_one_epoch(
             mask = mask.to(device, dtype=torch.float32, non_blocking=True)
             labels = labels.to(device, dtype=torch.long, non_blocking=True)
             inputs_gt = inputs_gt.to(device, dtype=torch.float32, non_blocking=True)
-
-            outputs, x_recon = model(inputs, mask)
-            loss = criterion(outputs, labels) + float(alpha) * criterion_rec(x_recon, inputs_gt)
-
+            # 使用 autocast 来启用 bf16
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                outputs, x_recon = model(inputs, mask)
+                # loss = criterion(outputs, labels) + float(alpha) * criterion_rec(x_recon, inputs_gt)
+                # 将 loss 计算放在 fp32
+            x_recon_fp32 = x_recon.float()
+            inputs_gt_fp32 = inputs_gt.float()
+            m = mask.to(dtype=x_recon_fp32.dtype).clamp(0.0, 1.0)
+            miss = 1.0 - m
+            diff = (x_recon_fp32 - inputs_gt_fp32)
+            mse_miss = (diff.mul(miss)).pow(2).sum() / (miss.sum() + 1e-8)
+            mse_known = (diff.mul(m)).pow(2).sum() / (m.sum() + 1e-8)
+            ce = criterion(outputs, labels)
+            lam_miss = 2.0
+            beta = 0.1
+            loss = ce + lam_miss * mse_miss + beta * mse_known
         loss.backward()
         optimizer.step()
 
@@ -145,8 +162,9 @@ def test_one_epoch(model, tensor_loader, criterion, device,
                 inputs, labels = batch
                 inputs = inputs.to(device, dtype=torch.float32, non_blocking=True)
                 labels = labels.to(device, dtype=torch.long, non_blocking=True)
-
-                outputs = model(inputs)
+                # 使用 autocast 启用 bf16
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                    outputs = model(inputs)
                 loss = criterion(outputs, labels)
 
             else:
@@ -155,10 +173,21 @@ def test_one_epoch(model, tensor_loader, criterion, device,
                 mask = mask.to(device, dtype=torch.float32, non_blocking=True)
                 labels = labels.to(device, dtype=torch.long, non_blocking=True)
                 inputs_gt = inputs_gt.to(device, dtype=torch.float32, non_blocking=True)
-
-                outputs, x_recon = model(inputs, mask)
-                loss = criterion(outputs, labels) + float(alpha) * criterion_rec(x_recon,  inputs_gt)
-
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                    outputs, x_recon = model(inputs, mask)
+                    # loss = criterion(outputs, labels) + float(alpha) * criterion_rec(x_recon, inputs_gt)
+                # 将 loss 计算放在 fp32
+                x_recon_fp32 = x_recon.float()
+                inputs_gt_fp32 = inputs_gt.float()
+                m = mask.to(dtype=x_recon_fp32.dtype).clamp(0.0, 1.0)
+                miss = 1.0 - m
+                diff = (x_recon_fp32 - inputs_gt_fp32)
+                mse_miss = (diff.mul(miss)).pow(2).sum() / (miss.sum() + 1e-8)
+                mse_known = (diff.mul(m)).pow(2).sum() / (m.sum() + 1e-8)
+                ce = criterion(outputs, labels)
+                lam_miss = 2.0
+                beta = 0.1
+                loss = ce + lam_miss * mse_miss + beta * mse_known
             bs = labels.size(0)
             total_loss += loss.item() * bs
             total_correct += (outputs.argmax(dim=1) == labels).sum().item()
@@ -284,6 +313,7 @@ def main():
     save_epochs = set(range(save_interval, train_epoch + 1, save_interval))
     # 确保最后一个epoch总是被保存
     save_epochs.add(train_epoch)
+
     if is_main():print(f"模型将会在以下Epoch结束时保存: {sorted(list(save_epochs))}")
     # ==========================================================
 

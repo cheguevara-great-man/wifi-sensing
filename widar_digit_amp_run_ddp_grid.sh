@@ -46,7 +46,7 @@ DATASET_NAME="Widar_digit_amp"
 
 DATASET_ROOT_DIR="../datasets/sense-fi"
 # 你希望使用的物理 GPU（顺序决定分组方式）
-GPU_LIST=(4 5 6 7)           # 例：两卡
+GPU_LIST=(3 4 5 6)           # 例：两卡
 #GPU_LIST=(0 1 2 3)      # 例：四卡
 
 # 每个任务使用几张 GPU：1=单卡；2=两卡DDP；4=四卡DDP
@@ -56,8 +56,8 @@ GPUS_PER_TASK=4
 GLOBAL_BATCH_SIZE=128
 
 #BASE_EXP_NAME="amp_rate_mask_rec_blk3_$(date +%Y%m%d_%H%M%S)"
-BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_fftblock1_20260118_003818"
-#BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_fftblock1_$(date +%Y%m%d_%H%M%S)"
+#BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_fftblock1_20260118_003818"
+BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_softdc0_9_lam2_bat0_1_$(date +%Y%m%d_%H%M%S)"
 use_energy_input=0
 use_mask_0=1
 is_rec=1
@@ -69,15 +69,15 @@ rec_alpha=0.5
 #SAMPLE_METHODS=(equidistant gaussian poisson)
 SAMPLE_METHODS=(equidistant)
 
-SAMPLE_RATES=(0.05)
-#SAMPLE_RATES=(0.05 0.1 0.2 0.5)
+#SAMPLE_RATES=(0.05)
+SAMPLE_RATES=(0.05 0.1 0.2 0.5)
 #SAMPLE_RATES=(0.0125 0.025 0.05 0.1 0.125 0.25 0.5 1)
 
 #INTERPOLATION_METHODS=(linear cubic nearest)
 INTERPOLATION_METHODS=(linear)
 
 MODELS=(ResNet18)
-CLEAN_LOCKS=0      # 1=启动时强制清空所有锁(慎用!); 0=不清锁(安全默认)
+CLEAN_LOCKS=1      # 1=启动时强制清空所有锁(慎用!); 0=不清锁(安全默认)
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1

@@ -1077,7 +1077,14 @@ def _get_widar_model_base(
         return WidarDigit_RecCls(classifier=classifier, csdc_blocks=csdc_blocks)
     elif rec_name == "mabf":
         # MABF is designed for amp (F=90) with explicit antennas (A=3,S=30)
-        return WidarDigit_MABFRecCls(classifier=classifier, stages=csdc_blocks)
+        #return WidarDigit_MABFRecCls(classifier=classifier, stages=csdc_blocks)
+        return WidarDigit_MABFRecCls(
+            classifier=classifier,
+            stages=csdc_blocks,
+            dc_mode='soft',
+            dc_lamb=0.9,
+        )
+
 
 def Widar_digit_amp_model(
     model_name: str,
