@@ -218,7 +218,7 @@ def main():
     parser.add_argument('--is_rec', type=int, default=0, choices=[0, 1], help='1: 重建+分类；0: 仅分类')
     parser.add_argument('--rec_alpha', type=float, default=0.5, help='重建损失权重')
     parser.add_argument('--csdc_blocks', type=int, default=1, help='重建blocks数量')
-    parser.add_argument('--rec_model', type=str, default='csdc', choices=['csdc', 'istanet'], help='重建模型类型')
+    parser.add_argument('--rec_model', type=str, default='csdc', choices=['csdc', 'istanet','mabf'], help='重建模型类型')
     parser.add_argument('--global_batch_size', type=int, default=128, help='全局batch(所有GPU加起来)')
     parser.add_argument('--num_workers_train', type=int, default=6)
     parser.add_argument('--num_workers_test', type=int, default=2)

@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import init
-
+import math
+from torch.utils.checkpoint import checkpoint # <--- 记得加这个引用
 # ======================================================================================
 # Widar3.0 Digit models (for your Widar_digit_amp / Widar_digit_conj datasets)
 #
@@ -610,6 +611,428 @@ class WidarDigit_ISTANetRecCls(nn.Module):
         return logits, x_recon
 
 
+
+# ======================================================================================
+# MABF (Multi-Antenna Block-FFT) reconstruction + classification (recommended)
+# ======================================================================================
+# Key idea:
+#   - Keep antenna dimension explicit: 90 = A(=3) * S(=30). Avoid mixing antenna boundaries.
+#   - Each stage: Time prior + Block-FFT Doppler prior -> gated fusion -> hard DC.
+#   - Doppler prior operates on windowed spectra (block FFT) and uses overlap-add to go back.
+
+
+def _split_ant_subc(x: torch.Tensor, A: int = 3, S: int = 30) -> torch.Tensor:
+    """(B,1,T,A*S) -> (B,A,T,S)"""
+    if x.dim() != 4:
+        raise ValueError(f"Expected x with shape (B,1,T,{A*S}), got {tuple(x.shape)}")
+    B, C, T, F = x.shape
+    if C != 1:
+        raise ValueError(f"Expected C=1, got C={C}")
+    if F != A * S:
+        raise ValueError(f"Expected F={A*S} (A={A},S={S}), got F={F}")
+    # (B,1,T,A,S) -> (B,T,A,S) -> (B,A,T,S)
+    x = x.contiguous().view(B, 1, T, A, S).squeeze(1).permute(0, 2, 1, 3).contiguous()
+    return x
+
+
+def _merge_ant_subc(x_a: torch.Tensor, A: int = 3, S: int = 30) -> torch.Tensor:
+    """(B,A,T,S) -> (B,1,T,A*S)"""
+    if x_a.dim() != 4:
+        raise ValueError(f"Expected x_a with shape (B,A,T,S), got {tuple(x_a.shape)}")
+    B, A0, T, S0 = x_a.shape
+    if A0 != A or S0 != S:
+        raise ValueError(f"Expected (A,S)=({A},{S}), got ({A0},{S0})")
+    x = x_a.permute(0, 2, 1, 3).contiguous().view(B, 1, T, A * S)
+    return x
+
+
+class BlockFFT(nn.Module):
+    """Differentiable block-FFT (like STFT without mel): unfold -> window -> rFFT."""
+
+    def __init__(self, win: int = 256, hop: int = 128, n_fft: int = 256, min_frames: int = 4):
+        super().__init__()
+        self.win = int(win)
+        self.hop = int(hop)
+        self.n_fft = int(n_fft)
+        self.min_frames = int(min_frames)
+        if self.n_fft < self.win:
+            raise ValueError(f"n_fft ({self.n_fft}) must be >= win ({self.win})")
+        # register buffer lazily (device/dtype will follow module)
+        self.register_buffer('_hann', torch.hann_window(self.win, periodic=True), persistent=False)
+
+    def forward(self, x: torch.Tensor):
+        """
+        x: (B,A,T,S) real
+        Returns:
+          X: complex (B,A,S,frames,bins)
+          meta: dict with T_pad, frames
+        """
+        if x.dim() != 4:
+            raise ValueError(f"Expected (B,A,T,S), got {tuple(x.shape)}")
+        B, A, T, S = x.shape
+        win, hop = self.win, self.hop
+
+        # pad to have enough frames (and at least min_frames)
+        if T < win:
+            n_frames = 1
+        else:
+            n_frames = int(math.ceil((T - win) / hop)) + 1
+        #n_frames = max(n_frames, self.min_frames)
+        T_pad = (n_frames - 1) * hop + win
+        pad_right = max(0, T_pad - T)
+        if pad_right > 0:
+            x = F.pad(x, (0, 0, 0, pad_right))  # pad time dim
+
+        # (B,A,S,T) -> (B*A*S,T)
+        x_flat = x.permute(0, 1, 3, 2).contiguous().view(B * A * S, -1)
+        frames = x_flat.unfold(dimension=1, size=win, step=hop)  # (BAS, n_frames, win)
+
+        window = self._hann
+        if window.device != frames.device or window.dtype != frames.dtype:
+            window = window.to(device=frames.device, dtype=frames.dtype)
+
+        frames = frames * window.view(1, 1, win)
+        X = torch.fft.rfft(frames, n=self.n_fft, dim=-1)  # (BAS, n_frames, bins)
+        bins = X.shape[-1]
+        X = X.view(B, A, S, n_frames, bins)
+        meta = {'T_pad': T_pad, 'frames': n_frames, 'bins': bins}
+        return X, meta
+
+
+class BlockIFFT(nn.Module):
+    """Inverse of BlockFFT using overlap-add with window-squared normalization."""
+
+    def __init__(self, win: int = 256, hop: int = 128, n_fft: int = 256):
+        super().__init__()
+        self.win = int(win)
+        self.hop = int(hop)
+        self.n_fft = int(n_fft)
+        self.register_buffer('_hann', torch.hann_window(self.win, periodic=False), persistent=False)
+
+    def forward(self, X: torch.Tensor, meta: dict, T_out: int):
+        """
+        X: complex (B,A,S,frames,bins)
+        Returns x_time: (B,A,T_out,S)
+        """
+        if X.dim() != 5:
+            raise ValueError(f"Expected (B,A,S,frames,bins), got {tuple(X.shape)}")
+        B, A, S, n_frames, _ = X.shape
+        win, hop = self.win, self.hop
+
+        window = self._hann
+        if window.device != X.device or window.dtype != X.real.dtype:
+            window = window.to(device=X.device, dtype=X.real.dtype)
+
+        Xf = X.contiguous().view(B * A * S, n_frames, -1)
+        frames = torch.fft.irfft(Xf, n=self.n_fft, dim=-1)[..., :win]  # (BAS, n_frames, win)
+        frames = frames * window.view(1, 1, win)
+
+        T_pad = int(meta.get('T_pad', (n_frames - 1) * hop + win))
+        out = frames.new_zeros((B * A * S, T_pad))
+        wsum = frames.new_zeros((B * A * S, T_pad))
+        w2 = (window ** 2).view(1, win)
+
+        for i in range(n_frames):
+            s0 = i * hop
+            out[:, s0:s0 + win] += frames[:, i, :]
+            wsum[:, s0:s0 + win] += w2
+
+        out = out / (wsum + 1e-8)
+        out = out[:, :T_out]
+        x = out.view(B, A, S, T_out).permute(0, 1, 3, 2).contiguous()  # (B,A,T,S)
+        return x
+
+
+class _TSResBlock(nn.Module):
+    """Time+Subcarrier separable residual block (2D conv over (T,S))."""
+
+    def __init__(self, C: int, kT: int = 5, kS: int = 3, dT: int = 1, dS: int = 1, gn_groups: int = 8, expand: int = 2):
+        super().__init__()
+        padT = (kT // 2) * dT
+        padS = (kS // 2) * dS
+
+        self.norm = nn.GroupNorm(num_groups=min(gn_groups, C), num_channels=C)
+        self.dw_t = nn.Conv2d(C, C, kernel_size=(kT, 1), padding=(padT, 0), dilation=(dT, 1), groups=C, bias=False)
+        self.dw_s = nn.Conv2d(C, C, kernel_size=(1, kS), padding=(0, padS), dilation=(1, dS), groups=C, bias=False)
+
+        # lightweight FFN
+        self.pw1 = nn.Conv2d(C, C * expand, kernel_size=1, bias=False)
+        self.pw2 = nn.Conv2d(C * expand, C, kernel_size=1, bias=False)
+
+    def forward(self, x):
+        r = x
+        x = self.norm(x)
+        x = F.gelu(self.dw_t(x))
+        x = F.gelu(self.dw_s(x))
+        x = self.pw2(F.gelu(self.pw1(x)))
+        return r + x
+
+
+class TimePrior(nn.Module):
+    """Time-domain prior operating on (B,A,T,S)."""
+
+    def __init__(self, A: int = 3, S: int = 30, C: int = 96, depth: int = 8):
+        super().__init__()
+        self.A, self.S = int(A), int(S)
+
+        # per-antenna stem (groups=A), then antenna-mix (1x1)
+        self.stem_g = nn.Conv2d(A, A * (C // 3), kernel_size=3, padding=1, groups=A, bias=False)
+        self.stem_mix = nn.Conv2d(A * (C // 3), C, kernel_size=1, bias=False)
+
+        blocks = []
+        for i in range(depth):
+            dT = 2 ** min(i, 5)  # up to 32
+            dS = 2 ** min(i // 2, 3)  # 1,1,2,2,4,4,8,8
+            blocks.append(_TSResBlock(C, kT=5, kS=3, dT=dT, dS=dS))
+        self.blocks = nn.Sequential(*blocks)
+
+        self.head = nn.Conv2d(C, A, kernel_size=1, bias=True)
+
+    def forward(self, x_a):
+        # x_a: (B,A,T,S)
+        x = self.stem_mix(F.gelu(self.stem_g(x_a)))
+        x = self.blocks(x)
+        delta = self.head(x)
+        return x_a + delta
+
+
+class _F3DResBlock(nn.Module):
+    """3D residual block over (freq_bins, frames, subc)."""
+
+    def __init__(self, C: int, kF: int = 5, kH: int = 3, kS: int = 3, dF: int = 1, dS: int = 1, gn_groups: int = 8, expand: int = 2):
+        super().__init__()
+        padF = (kF // 2) * dF
+        padH = (kH // 2)
+        padS = (kS // 2) * dS
+
+        self.norm = nn.GroupNorm(num_groups=min(gn_groups, C), num_channels=C)
+        self.dw = nn.Conv3d(C, C, kernel_size=(kF, kH, kS), padding=(padF, padH, padS), dilation=(dF, 1, dS), groups=C, bias=False)
+        self.pw1 = nn.Conv3d(C, C * expand, kernel_size=1, bias=False)
+        self.pw2 = nn.Conv3d(C * expand, C, kernel_size=1, bias=False)
+
+    def forward(self, x):
+        r = x
+        x = self.norm(x)
+        x = F.gelu(self.dw(x))
+        x = self.pw2(F.gelu(self.pw1(x)))
+        return r + x
+
+
+class DopplerBlockFFTPrior(nn.Module):
+    """Block-FFT Doppler prior: edit complex spectra -> overlap-add back to time."""
+
+    def __init__(
+        self,
+        A: int = 3,
+        S: int = 30,
+        C: int = 96,
+        depth: int = 6,
+        win: int = 256,
+        hop: int = 128,
+        n_fft: int = 256,
+        min_frames: int = 4,
+    ):
+        super().__init__()
+        self.A, self.S = int(A), int(S)
+        self.fft = BlockFFT(win=win, hop=hop, n_fft=n_fft, min_frames=min_frames)
+        self.ifft = BlockIFFT(win=win, hop=hop, n_fft=n_fft)
+
+        Cin = A * 2
+        # per-antenna stem (groups=A): (A*2)->(A*Cp), then mix
+        Cp = max(8, C // 3)
+        self.stem_g = nn.Conv3d(Cin, A * Cp, kernel_size=1, groups=A, bias=False)
+        self.stem_mix = nn.Conv3d(A * Cp, C, kernel_size=1, bias=False)
+
+        blocks = []
+        for i in range(depth):
+            dF = 1
+            dS = 2 ** min(i // 2, 2)  # 1,1,2,2,4,4,...
+            blocks.append(_F3DResBlock(C, kF=5, kH=3, kS=3, dF=dF, dS=dS))
+        self.blocks = nn.Sequential(*blocks)
+
+        self.head = nn.Conv3d(C, Cin, kernel_size=1, bias=True)
+
+    def forward(self, x_a):
+        """x_a: (B,A,T,S) -> (B,A,T,S)"""
+        X, meta = self.fft(x_a)  # (B,A,S,H,F) complex
+        B, A, S, H, Fbins = X.shape
+
+        # (B,A,S,H,F) -> (B,A*2,F,H,S)
+        ri = torch.stack([X.real, X.imag], dim=3)  # (B,A,S,2,H,F)
+        ri = ri.permute(0, 1, 3, 5, 4, 2).contiguous().view(B, A * 2, Fbins, H, S)
+
+        y = self.stem_mix(F.gelu(self.stem_g(ri)))
+        y = self.blocks(y)
+        delta = self.head(y)  # (B,A*2,F,H,S)
+        ri_out = ri + delta
+
+        # back to complex (B,A,S,H,F)
+        ri_out = ri_out.view(B, A, 2, Fbins, H, S).permute(0, 1, 5, 4, 3, 2).contiguous()  # (B,A,S,H,F,2)
+        X_out = torch.complex(ri_out[..., 0], ri_out[..., 1])
+
+        x_time = self.ifft(X_out, meta=meta, T_out=x_a.shape[2])  # (B,A,T,S)
+        return x_time
+
+
+class GateFuseA(nn.Module):
+    """Fuse two (B,A,T,S) signals with a learned gate."""
+
+    def __init__(self, A: int = 3, hidden: int = 24):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(2 * A, hidden, kernel_size=3, padding=1, bias=False),
+            nn.GELU(),
+            nn.Conv2d(hidden, A, kernel_size=1, bias=True),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x_t, x_f):
+        g = self.net(torch.cat([x_t, x_f], dim=1))  # (B,A,T,S)
+        return g * x_t + (1.0 - g) * x_f
+
+
+class MABFStage(nn.Module):
+    def __init__(
+        self,
+        A: int = 3,
+        S: int = 30,
+        time_C: int = 96,
+        time_depth: int = 8,
+        freq_C: int = 96,
+        freq_depth: int = 6,
+        win: int = 256,
+        hop: int = 128,
+        n_fft: int = 256,
+        min_frames: int = 4,
+    ):
+        super().__init__()
+        self.time = TimePrior(A=A, S=S, C=time_C, depth=time_depth)
+        self.freq = DopplerBlockFFTPrior(A=A, S=S, C=freq_C, depth=freq_depth, win=win, hop=hop, n_fft=n_fft, min_frames=min_frames)
+        self.fuse = GateFuseA(A=A)
+
+    def forward(self, x_a):
+        # 1. 定义一个单纯的前向函数
+        def run_forward(x):
+            x_t = self.time(x)
+            x_f = self.freq(x)
+            return self.fuse(x_t, x_f)
+
+        # 2. 如果在训练且需要梯度，就用 checkpoint 包起来
+        if self.training and x_a.requires_grad:
+            # 这行代码的意思是：中间结果我不存了，反向传播时再算一遍
+            # 显存占用直接 /2甚至/3
+            return checkpoint(run_forward, x_a, use_reentrant=False)
+        else:
+            return run_forward(x_a)
+
+        # 3. 原始不带 checkpoint 的写法（保留以供参考）。上面是为了减小显存开销。
+        x_t = self.time(x_a)
+        x_f = self.freq(x_a)
+        x = self.fuse(x_t, x_f)
+        return x
+
+
+class DC_mabf(nn.Module):
+    """
+    通用数据一致性层 (Data Consistency Layer).
+    支持 Hard (强制替换) 和 Soft (梯度下降/松弛) 两种模式。
+    """
+
+    def __init__(self, mode: str = 'hard', lamb: float = 0.1, learnable: bool = False):
+        """
+        Args:
+            mode: 'hard' or 'soft'
+            lamb: Soft 模式下的更新步长 (lambda). 仅在 mode='soft' 时有效.
+                  x_new = x_old - lambda * mask * (x_old - x_obs)
+                  当 lambda=1 时，Soft 等价于 Hard.
+            learnable: 是否将 lambda 设为可训练参数.
+        """
+        super().__init__()
+        self.mode = mode.lower()
+
+        # Soft DC 的参数设置
+        if self.mode == 'soft':
+            lamb = float(max(1e-4, min(1-1e-4, lamb)))
+            raw = math.log(lamb / (1.0 - lamb))
+            if learnable:
+                # 初始化为 lamb，网络可以自己学这个值
+                self.lamb = nn.Parameter(torch.tensor(float(raw)))
+            else:
+                # 固定值，作为 buffer 注册以免被当成模型参数更新，但会随模型保存
+                self.register_buffer('lamb', torch.tensor(float(raw)))
+        else:
+            self.lamb = None
+    def forward(self, x_rec, x_obs, mask):
+        """
+        x_rec: 网络当前的重建结果 (B, A, T, S)
+        x_obs: 原始观测输入 (B, A, T, S)
+        mask:  观测掩码 (B, A, T, S), 1=Known, 0=Missing
+        """
+        # 确保 mask 类型匹配
+        m = mask.to(dtype=x_rec.dtype).clamp(0, 1)
+        if self.mode == 'hard':
+            # Hard DC:  x = M * y + (1-M) * x
+            return m * x_obs + (1.0 - m) * x_rec
+        elif self.mode == 'soft':
+            # Soft DC: 在观测点上，向观测值“靠拢”一点点，而不是完全替换
+            # 公式: x_new = x_rec - lambda * M * (x_rec - x_obs)
+            # 物理含义: 相当于做了一步梯度下降，最小化 ||M(x) - y||^2
+            lamb = torch.sigmoid(self.lamb)  # (0,1)
+            return x_rec - lamb * m * (x_rec - x_obs)
+        else:
+            raise ValueError(f"Unknown DC mode: {self.mode}")
+class WidarDigit_MABFRecCls(nn.Module):
+    """Multi-stage MABF reconstruction + classifier.
+
+    Inputs:
+      x_lr:  (B,1,T,90)   (amp)
+      mask:  (B,1,T,90)
+    Outputs:
+      logits, x_recon
+    """
+
+    def __init__(
+        self,
+        classifier: nn.Module,
+        stages: int = 3,
+        A: int = 3,
+        S: int = 30,
+        # block-fft config
+        win: int = 256,
+        hop: int = 128,
+        n_fft: int = 256,
+        min_frames: int = 4,
+        dc_mode='hard',
+        dc_lamb=0.1,
+    ):
+        super().__init__()
+        self.A, self.S = int(A), int(S)
+        self.stages = max(1, int(stages))
+
+        self.stage_list = nn.ModuleList([
+            MABFStage(A=A, S=S, win=win, hop=hop, n_fft=n_fft, min_frames=min_frames)
+            for _ in range(self.stages)
+        ])
+        self.dc = DC_mabf(mode=dc_mode, lamb=dc_lamb, learnable=False)
+        self.classifier = classifier
+
+    def forward(self, x_lr, mask):
+        # keep everything in antenna view internally
+        x_a = _split_ant_subc(x_lr)  # (B,A,T,S)
+        # 【新增这一行】强制开启梯度，为了让 Stage 1 的 checkpoint 生效！
+        if self.training:
+            x_a.requires_grad_(True)
+        x0_a = x_a
+        mask_a = _split_ant_subc(mask)
+
+        for st in self.stage_list:
+            x_a = st(x_a)
+            x_a = self.dc(x_a, x0_a, mask_a)
+
+        x_recon = _merge_ant_subc(x_a)       # (B,1,T,90)
+        logits = self.classifier(x_recon)
+        return logits, x_recon
+
 # ======================================================================================
 # Factory functions (what you asked for)
 # ======================================================================================
@@ -652,7 +1075,9 @@ def _get_widar_model_base(
         return WidarDigit_ISTANetRecCls(classifier=classifier, layer_num=csdc_blocks)
     elif rec_name == "csdc":
         return WidarDigit_RecCls(classifier=classifier, csdc_blocks=csdc_blocks)
-
+    elif rec_name == "mabf":
+        # MABF is designed for amp (F=90) with explicit antennas (A=3,S=30)
+        return WidarDigit_MABFRecCls(classifier=classifier, stages=csdc_blocks)
 
 def Widar_digit_amp_model(
     model_name: str,

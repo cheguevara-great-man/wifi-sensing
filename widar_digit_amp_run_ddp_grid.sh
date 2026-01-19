@@ -46,36 +46,38 @@ DATASET_NAME="Widar_digit_amp"
 
 DATASET_ROOT_DIR="../datasets/sense-fi"
 # 你希望使用的物理 GPU（顺序决定分组方式）
-GPU_LIST=(4 5)           # 例：两卡
+GPU_LIST=(4 5 6 7)           # 例：两卡
 #GPU_LIST=(0 1 2 3)      # 例：四卡
 
 # 每个任务使用几张 GPU：1=单卡；2=两卡DDP；4=四卡DDP
-GPUS_PER_TASK=2
+GPUS_PER_TASK=4
 
 # 全局 batch（所有GPU加起来）
 GLOBAL_BATCH_SIZE=128
 
 #BASE_EXP_NAME="amp_rate_mask_rec_blk3_$(date +%Y%m%d_%H%M%S)"
-#BASE_EXP_NAME="conj_rate_interp_20260104_0043"
-BASE_EXP_NAME="amp_rate_mask_rec_blk4_fftblock1_$(date +%Y%m%d_%H%M%S)"
+BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_fftblock1_20260118_003818"
+#BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_fftblock1_$(date +%Y%m%d_%H%M%S)"
 use_energy_input=0
 use_mask_0=1
 is_rec=1
 #istanet csdc
-rec_model_method=csdc
-csdc_blocks=4
+rec_model_method=mabf
+csdc_blocks=3
 rec_alpha=0.5
 
 #SAMPLE_METHODS=(equidistant gaussian poisson)
 SAMPLE_METHODS=(equidistant)
 
-SAMPLE_RATES=(0.05 0.1 0.2 0.5)
+SAMPLE_RATES=(0.05)
+#SAMPLE_RATES=(0.05 0.1 0.2 0.5)
 #SAMPLE_RATES=(0.0125 0.025 0.05 0.1 0.125 0.25 0.5 1)
 
 #INTERPOLATION_METHODS=(linear cubic nearest)
 INTERPOLATION_METHODS=(linear)
 
 MODELS=(ResNet18)
+CLEAN_LOCKS=0      # 1=启动时强制清空所有锁(慎用!); 0=不清锁(安全默认)
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
@@ -115,8 +117,22 @@ echo "=============================================================="
 
 # 清理可能残留的锁（上次异常退出会留下）
 # 你也可以注释掉这行，手动清理
-rm -rf "${LOCK_DIR}/gpu_"*.lockdir 2>/dev/null || true
+#rm -rf "${LOCK_DIR}/gpu_"*.lockdir 2>/dev/null || true
+# =========================================================
 
+# [智能锁清理逻辑]
+# 只有当你明确设置 CLEAN_LOCKS=1 时才执行清理
+# 场景：你是第一个启动的脚本，或者你确定之前跑崩了留下了死锁
+# =========================================================
+if [[ "${CLEAN_LOCKS:-0}" == "1" ]]; then
+    echo "⚠️  [警告] CLEAN_LOCKS=1: 正在强制清理残留的 GPU 锁..."
+    rm -rf "${LOCK_DIR}/gpu_"*.lockdir 2>/dev/null || true
+    echo "✅  清理完毕！"
+else
+    echo "ℹ️  [安全模式] 跳过清理锁 (CLEAN_LOCKS=0)。"
+    echo "    提示: 如果发现任务一直卡在等待状态，请尝试运行: CLEAN_LOCKS=1 $0"
+fi
+# =========================================================
 # ---- 任务列表 ----
 declare -a PENDING_TASKS=()
 for s_method in "${SAMPLE_METHODS[@]}"; do
