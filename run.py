@@ -74,12 +74,22 @@ use_amp = True  # 控制是否启用 AMP（默认启用）
 def train_one_epoch(
     model, tensor_loader, criterion, device, optimizer,
     is_rec: int = 0, criterion_rec=None, alpha: float = 0.5,
+    lam_miss=2,beta=0.1,log_parts=False,
     grad_check=False           # 是否检查梯度/参数是否在更新（debug 用）
 ):
     model.train()
     epoch_loss = 0.0
     epoch_correct = 0
     num_samples = 0
+    # --- [新增] loss 分量统计 ---
+    sum_ce = 0.0
+    sum_miss_term = 0.0
+    sum_known_term = 0.0
+    sum_miss_ratio = 0.0
+    sum_scale = 0.0
+    sum_mse_all_equiv = 0.0
+    part_cnt = 0
+
 
     first_param_before = None
     if grad_check:
@@ -118,9 +128,22 @@ def train_one_epoch(
             mse_miss = (diff.mul(miss)).pow(2).sum() / (miss.sum() + 1e-8)
             mse_known = (diff.mul(m)).pow(2).sum() / (m.sum() + 1e-8)
             ce = criterion(outputs, labels)
-            lam_miss = 2.0
-            beta = 0.1
             loss = ce + lam_miss * mse_miss + beta * mse_known
+
+            if log_parts:
+                # miss_ratio = Nmiss / Nall
+                miss_ratio = (miss.sum() / (m.numel() + 1e-8)).detach()
+                scale = ((m.numel()) / (miss.sum() + 1e-8)).detach()  # Nall/Nmiss
+                mse_all_equiv = (mse_miss * miss_ratio).detach()      # ≈ old MSE_all (known误差≈0时)
+
+                sum_ce += ce.detach().float().item()
+                sum_miss_term += (lam_miss * mse_miss).detach().float().item()
+                sum_known_term += (beta * mse_known).detach().float().item()
+                sum_miss_ratio += miss_ratio.float().item()
+                sum_scale += scale.float().item()
+                sum_mse_all_equiv += mse_all_equiv.float().item()
+                part_cnt += 1
+
         loss.backward()
         optimizer.step()
 
@@ -147,12 +170,37 @@ def train_one_epoch(
             first_param_after = next(model.parameters()).detach()
             delta = (first_param_after - first_param_before).abs().mean().item()
         if is_main():print(f"[grad_check] first_param abs-mean delta = {delta:.6e}")
+    # --- [新增] DDP 聚合 + 打印 ---
+    if log_parts and part_cnt > 0:
+        if is_dist():
+            t = torch.tensor(
+                [sum_ce, sum_miss_term, sum_known_term, sum_miss_ratio, sum_scale, sum_mse_all_equiv, float(part_cnt)],
+                device=device, dtype=torch.float64
+            )
+            dist.all_reduce(t, op=dist.ReduceOp.SUM)
+            sum_ce, sum_miss_term, sum_known_term, sum_miss_ratio, sum_scale, sum_mse_all_equiv, part_cnt = t.tolist()
+
+        if is_main():
+            denom = max(1.0, part_cnt)
+            ce_m = sum_ce / denom
+            miss_m = sum_miss_term / denom
+            known_m = sum_known_term / denom
+            mr = sum_miss_ratio / denom
+            sc = sum_scale / denom
+            mse_all_eq = sum_mse_all_equiv / denom
+            # old 0.5*MSE_all 等效项
+            old_like = 0.5 * mse_all_eq
+            print(
+                f"[loss_parts] miss_ratio={mr:.4f}  Nall/Nmiss={sc:.2f}  "
+                f"CE={ce_m:.4f}  lam*mse_miss={miss_m:.4f}  beta*mse_known={known_m:.4f}  "
+                f"mse_all_equiv={mse_all_eq:.6f}  old_like(0.5*MSE_all)={old_like:.6f}"
+            )
 
     return epoch_loss, epoch_accuracy
 
 
 def test_one_epoch(model, tensor_loader, criterion, device,
-                   is_rec: int = 0, criterion_rec=None, alpha: float = 0.5):
+                   is_rec: int = 0, criterion_rec=None, alpha: float = 0.5,lam_miss=2,beta=0.1,):
     model.eval()
     total_loss, total_correct, num_samples = 0.0, 0, 0
 
@@ -185,8 +233,6 @@ def test_one_epoch(model, tensor_loader, criterion, device,
                 mse_miss = (diff.mul(miss)).pow(2).sum() / (miss.sum() + 1e-8)
                 mse_known = (diff.mul(m)).pow(2).sum() / (m.sum() + 1e-8)
                 ce = criterion(outputs, labels)
-                lam_miss = 2.0
-                beta = 0.1
                 loss = ce + lam_miss * mse_miss + beta * mse_known
             bs = labels.size(0)
             total_loss += loss.item() * bs
@@ -332,13 +378,13 @@ def main():
         if ddp and hasattr(train_loader.sampler, "set_epoch"):
             train_loader.sampler.set_epoch(epoch)
         if is_main():print(f"--- Epoch {epoch}/{train_epoch} ---")
-
+        log_parts = (epoch <= 3)# 前3个epoch打印loss分量
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, device, optimizer,
-                                                is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha)
+                                                is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha,lam_miss=2,beta=0.1,log_parts=log_parts)
         if is_main():print(f"Train -> Loss: {train_loss:.5f}, Accuracy: {train_acc:.4f}")
 
         test_loss, test_acc = test_one_epoch(model, test_loader, criterion, device,
-                                             is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha)
+                                             is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha, lam_miss=2,beta=0.1)
         if is_main():print(f"Test/Validation -> Loss: {test_loss:.5f}, Accuracy: {test_acc:.4f}")
 
         # ==================== 5. 新增：收集当前epoch的数据 ====================

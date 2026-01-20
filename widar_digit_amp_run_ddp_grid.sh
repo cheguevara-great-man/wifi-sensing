@@ -77,7 +77,7 @@ SAMPLE_RATES=(0.05 0.1 0.2 0.5)
 INTERPOLATION_METHODS=(linear)
 
 MODELS=(ResNet18)
-CLEAN_LOCKS=1      # 1=启动时强制清空所有锁(慎用!); 0=不清锁(安全默认)
+CLEAN_LOCKS=0      # 1=启动时强制清空所有锁(慎用!); 0=不清锁(安全默认)
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
