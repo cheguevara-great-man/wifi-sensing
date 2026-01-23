@@ -554,6 +554,142 @@ class WidarDigit_RecCls(nn.Module):
 
 
 # ======================================================================================
+# Fixed (non-learnable) FISTA reconstruction + classification
+# ======================================================================================
+def _soft_threshold_real(x: torch.Tensor, lam: float) -> torch.Tensor:
+    return torch.sign(x) * torch.clamp(torch.abs(x) - lam, min=0.0)
+
+def _soft_threshold_complex(z: torch.Tensor, lam: float, eps: float = 1e-8) -> torch.Tensor:
+    mag = torch.abs(z)
+    scale = torch.clamp(mag - lam, min=0.0) / (mag + eps)
+    return z * scale
+
+def _dct_ortho(x: torch.Tensor) -> torch.Tensor:
+    """Orthonormal DCT-II (last dim). Real -> Real. GPU friendly."""
+    N = x.shape[-1]
+    x_flat = x.reshape(-1, N)
+    v = torch.cat([x_flat, x_flat.flip(dims=[1])], dim=1)  # (B*, 2N)
+    Vc = torch.fft.fft(v, dim=1)
+
+    k = torch.arange(N, device=x.device, dtype=torch.float32).view(1, -1)
+    W = torch.cos(-math.pi * k / (2.0 * N)) + 1j * torch.sin(-math.pi * k / (2.0 * N))
+    X = (Vc[:, :N] * W).real * 0.5
+
+    X[:, 0] = X[:, 0] / math.sqrt(N)
+    X[:, 1:] = X[:, 1:] * math.sqrt(2.0 / N)
+    return X.reshape(*x.shape)
+
+def _idct_ortho(Xo: torch.Tensor) -> torch.Tensor:
+    """Inverse of _dct_ortho (orthonormal IDCT-III)."""
+    N = Xo.shape[-1]
+    X_flat = Xo.reshape(-1, N).clone()
+
+    X_flat[:, 0] = X_flat[:, 0] * math.sqrt(N)
+    X_flat[:, 1:] = X_flat[:, 1:] * math.sqrt(N / 2.0)
+
+    k = torch.arange(N, device=Xo.device, dtype=torch.float32).view(1, -1)
+    W = torch.cos(math.pi * k / (2.0 * N)) + 1j * torch.sin(math.pi * k / (2.0 * N))
+
+    V = torch.complex(X_flat, torch.zeros_like(X_flat)) * (2.0 * W)
+    zero = torch.zeros((V.shape[0], 1), device=V.device, dtype=V.dtype)
+    V_full = torch.cat([V, zero, V[:, 1:].flip([1]).conj()], dim=1)  # (B*, 2N)
+
+    v = torch.fft.ifft(V_full, dim=1).real
+    return v[:, :N].reshape(*Xo.shape)
+
+def _prox_l1_transform(v: torch.Tensor, lam: float, prior: str = "fft") -> torch.Tensor:
+    prior = prior.lower()
+    if prior == "dct":
+        V = _dct_ortho(v)
+        V = _soft_threshold_real(V, lam)
+        return _idct_ortho(V)
+    elif prior == "fft":
+        V = torch.fft.rfft(v, dim=-1, norm="ortho")
+        V = _soft_threshold_complex(V, lam)
+        return torch.fft.irfft(V, n=v.shape[-1], dim=-1, norm="ortho")
+    else:
+        raise ValueError(f"Unknown prior: {prior}")
+
+@torch.no_grad()
+def _fista_recon_1d(
+    y: torch.Tensor,
+    m: torch.Tensor,
+    n_iter: int = 30,
+    lam: float = 0.01,
+    prior: str = "fft",
+    hard_dc: bool = False,
+) -> torch.Tensor:
+    """
+    Solve: min_x 0.5|| M(x-y) ||^2 + lam || W x ||_1   (W=DCT or rFFT along time)
+    y,m: (B*,T) float32, m in {0,1}
+    """
+    y = y.float()
+    m = m.float().clamp(0, 1)
+
+    x = y.clone()
+    z = x.clone()
+    t = y.new_tensor(1.0)
+
+    for _ in range(int(n_iter)):
+        grad = (z - y) * m          # M(z-y)
+        v = z - grad                # step=1
+        x_next = _prox_l1_transform(v, lam=lam, prior=prior)
+
+        t_next = 0.5 * (1.0 + torch.sqrt(1.0 + 4.0 * t * t))
+        z = x_next + ((t - 1.0) / t_next) * (x_next - x)
+
+        x = x_next
+        t = t_next
+
+    if hard_dc:
+        x = x * (1.0 - m) + y * m   # enforce exact known points
+    return x
+
+class WidarDigit_FISTARecCls(nn.Module):
+    """
+    Fixed FISTA recon + classifier.
+    x_lr/mask: (B,1,T,F)
+    return: logits, x_recon
+    """
+    def __init__(
+        self,
+        classifier: nn.Module,
+        n_iter: int = 30,
+        lam: float = 0.01,
+        prior: str = "fft",   # "fft"(recommended) or "dct"
+        hard_dc: bool = True,
+    ):
+        super().__init__()
+        self.classifier = classifier
+        self.n_iter = int(n_iter)
+        self.lam = float(lam)
+        self.prior = str(prior)
+        self.hard_dc = bool(hard_dc)
+
+    def forward(self, x_lr, mask):
+        if x_lr.dim() == 3:
+            x_lr = x_lr.unsqueeze(1)
+        if mask.dim() == 3:
+            mask = mask.unsqueeze(1)
+
+        B, C, T, Fdim = x_lr.shape
+        assert C == 1, f"Expected C=1, got {C}"
+
+        # (B,1,T,F) -> (B,F,T) -> (B*F,T)
+        y = x_lr.squeeze(1).transpose(1, 2).contiguous().view(B * Fdim, T)
+        m = mask.squeeze(1).transpose(1, 2).contiguous().view(B * Fdim, T)
+
+        # 全程在 x_lr 所在 device 上跑：如果 inputs 在 cuda:local_rank，就用那张卡
+        x_rec = _fista_recon_1d(y, m, n_iter=self.n_iter, lam=self.lam, prior=self.prior, hard_dc=self.hard_dc)
+
+        # (B*F,T) -> (B,F,T) -> (B,1,T,F)
+        x_recon = x_rec.view(B, Fdim, T).transpose(1, 2).contiguous().unsqueeze(1)
+
+        logits = self.classifier(x_recon)
+        return logits, x_recon
+
+
+# ======================================================================================
 # ISTA-Net style reconstruction + classification
 # ======================================================================================
 class ISTANetBlock(nn.Module):
@@ -1081,8 +1217,23 @@ def _get_widar_model_base(
         return WidarDigit_MABFRecCls(
             classifier=classifier,
             stages=csdc_blocks,
-            dc_mode='soft',
+            dc_mode='hard',
             dc_lamb=0.9,
+        )
+    elif rec_name.startswith("fista"):
+        # 支持：fista_fft / fista_dct / fista(默认fft)
+        if rec_name.endswith("_dct"):
+            prior = "dct"
+        elif rec_name.endswith("_fft"):
+            prior = "fft"   # rec_name.endswith("_fft") 或者不带后缀都走 fft
+        else:
+            prior = "fft"
+        return WidarDigit_FISTARecCls(
+            classifier=classifier,
+                n_iter=csdc_blocks,
+            lam=0.01,
+            prior=prior,
+            hard_dc=False
         )
 
 

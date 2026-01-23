@@ -45,33 +45,35 @@ PYTHON_SCRIPT="run.py"
 DATASET_NAME="Widar_digit_amp"
 
 DATASET_ROOT_DIR="../datasets/sense-fi"
-# 你希望使用的物理 GPU（顺序决定分组方式）
-GPU_LIST=(3 4 5 6)           # 例：两卡
-#GPU_LIST=(0 1 2 3)      # 例：四卡
 
-# 每个任务使用几张 GPU：1=单卡；2=两卡DDP；4=四卡DDP
-GPUS_PER_TASK=4
 
-# 全局 batch（所有GPU加起来）
-GLOBAL_BATCH_SIZE=128
-
-#BASE_EXP_NAME="amp_rate_mask_rec_blk3_$(date +%Y%m%d_%H%M%S)"
+BASE_EXP_NAME="amp_rate_mask_rec_fastista_0_1_$(date +%Y%m%d_%H%M%S)"
 #BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_fftblock1_20260118_003818"
-BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_softdc0_9_lam2_bat0_1_$(date +%Y%m%d_%H%M%S)"
+#BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_hard_dc_lam_1_$(date +%Y%m%d_%H%M%S)"
 use_energy_input=0
-use_mask_0=1
-is_rec=1
+#use_mask_0=1
+#is_rec=1
 #istanet csdc
-rec_model_method=mabf
-csdc_blocks=3
+rec_model_method=fista_dct
+csdc_blocks=40
 rec_alpha=0.5
 
+lam_miss=0.0
+beta=0.0
+use_mask_0=1
+is_rec=1
 #SAMPLE_METHODS=(equidistant gaussian poisson)
 SAMPLE_METHODS=(equidistant)
-
-#SAMPLE_RATES=(0.05)
+#SAMPLE_RATES=(1)
 SAMPLE_RATES=(0.05 0.1 0.2 0.5)
 #SAMPLE_RATES=(0.0125 0.025 0.05 0.1 0.125 0.25 0.5 1)
+# 你希望使用的物理 GPU（顺序决定分组方式）
+GPU_LIST=(3 4 5)           # 例：两卡
+#GPU_LIST=(0 1 2 3)      # 例：四卡
+# 每个任务使用几张 GPU：1=单卡；2=两卡DDP；4=四卡DDP
+GPUS_PER_TASK=3
+# 全局 batch（所有GPU加起来）
+GLOBAL_BATCH_SIZE=128
 
 #INTERPOLATION_METHODS=(linear cubic nearest)
 INTERPOLATION_METHODS=(linear)
@@ -125,9 +127,10 @@ echo "=============================================================="
 # 场景：你是第一个启动的脚本，或者你确定之前跑崩了留下了死锁
 # =========================================================
 if [[ "${CLEAN_LOCKS:-0}" == "1" ]]; then
-    echo "⚠️  [警告] CLEAN_LOCKS=1: 正在强制清理残留的 GPU 锁..."
-    rm -rf "${LOCK_DIR}/gpu_"*.lockdir 2>/dev/null || true
-    echo "✅  清理完毕！"
+    echo "⚠️  [警告] CLEAN_LOCKS=1: 正在强制清理残留的 GPU 锁(仅限本脚本GPU_LIST)..."
+    for gpu in "${GPU_LIST[@]}"; do
+      rm -rf "${LOCK_DIR}/gpu_${gpu}.lockdir" 2>/dev/null || true
+    done
 else
     echo "ℹ️  [安全模式] 跳过清理锁 (CLEAN_LOCKS=0)。"
     echo "    提示: 如果发现任务一直卡在等待状态，请尝试运行: CLEAN_LOCKS=1 $0"
@@ -250,6 +253,8 @@ while ((${#PENDING_TASKS[@]} > 0)); do
           --csdc_blocks "$csdc_blocks" \
           --rec_model "$rec_model_method" \
           --global_batch_size "$GLOBAL_BATCH_SIZE" \
+          --lam_miss "$lam_miss" \
+          --beta "$beta" \
           > "$log_file" 2>&1
       else
         CUDA_VISIBLE_DEVICES="${cuda_visible}" \
@@ -268,6 +273,8 @@ while ((${#PENDING_TASKS[@]} > 0)); do
           --csdc_blocks "$csdc_blocks" \
           --rec_model "$rec_model_method" \
           --global_batch_size "$GLOBAL_BATCH_SIZE" \
+          --lam_miss "$lam_miss" \
+          --beta "$beta" \
           > "$log_file" 2>&1
       fi
       exit $?

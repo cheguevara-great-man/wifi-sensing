@@ -74,7 +74,7 @@ use_amp = True  # 控制是否启用 AMP（默认启用）
 def train_one_epoch(
     model, tensor_loader, criterion, device, optimizer,
     is_rec: int = 0, criterion_rec=None, alpha: float = 0.5,
-    lam_miss=2,beta=0.1,log_parts=False,
+    lam_miss=2.0,beta=0.1,log_parts=False,
     grad_check=False           # 是否检查梯度/参数是否在更新（debug 用）
 ):
     model.train()
@@ -200,7 +200,7 @@ def train_one_epoch(
 
 
 def test_one_epoch(model, tensor_loader, criterion, device,
-                   is_rec: int = 0, criterion_rec=None, alpha: float = 0.5,lam_miss=2,beta=0.1,):
+                   is_rec: int = 0, criterion_rec=None, alpha: float = 0.5,lam_miss=2.0,beta=0.1,):
     model.eval()
     total_loss, total_correct, num_samples = 0.0, 0, 0
 
@@ -293,11 +293,12 @@ def main():
     parser.add_argument('--is_rec', type=int, default=0, choices=[0, 1], help='1: 重建+分类；0: 仅分类')
     parser.add_argument('--rec_alpha', type=float, default=0.5, help='重建损失权重')
     parser.add_argument('--csdc_blocks', type=int, default=1, help='重建blocks数量')
-    parser.add_argument('--rec_model', type=str, default='csdc', choices=['csdc', 'istanet','mabf'], help='重建模型类型')
+    parser.add_argument('--rec_model', type=str, default='csdc', choices=['csdc', 'istanet','mabf','fista', 'fista_fft', 'fista_dct'], help='重建模型类型')
     parser.add_argument('--global_batch_size', type=int, default=128, help='全局batch(所有GPU加起来)')
     parser.add_argument('--num_workers_train', type=int, default=6)
     parser.add_argument('--num_workers_test', type=int, default=2)
-
+    parser.add_argument('--lam_miss', type=float, default=1.0, help='重建损失中缺失部分的权重')
+    parser.add_argument('--beta', type=float, default=0.0, help='重建损失中已知部分的权重')
     args = parser.parse_args()
     # ---- DDP init (torchrun 会设置这些环境变量) ----
     ddp = ("RANK" in os.environ) and ("WORLD_SIZE" in os.environ)
@@ -380,11 +381,11 @@ def main():
         if is_main():print(f"--- Epoch {epoch}/{train_epoch} ---")
         log_parts = (epoch <= 3)# 前3个epoch打印loss分量
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, device, optimizer,
-                                                is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha,lam_miss=2,beta=0.1,log_parts=log_parts)
+                                                is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha,lam_miss=args.lam_miss,beta=args.beta,log_parts=log_parts)
         if is_main():print(f"Train -> Loss: {train_loss:.5f}, Accuracy: {train_acc:.4f}")
 
         test_loss, test_acc = test_one_epoch(model, test_loader, criterion, device,
-                                             is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha, lam_miss=2,beta=0.1)
+                                             is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha, lam_miss=args.lam_miss,beta=args.beta)
         if is_main():print(f"Test/Validation -> Loss: {test_loss:.5f}, Accuracy: {test_acc:.4f}")
 
         # ==================== 5. 新增：收集当前epoch的数据 ====================

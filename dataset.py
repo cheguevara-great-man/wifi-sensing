@@ -529,6 +529,7 @@ def Widar_digit_amp_dataset(
 ):
     return WidarDigitShardDataset(
         root_dir= "/home/cxy/data/code/datasets/sense-fi/Widar_digit", variant="amp", split=split,
+        #root_dir= "/home/cxy/data/code/datasets/sense-fi/Widar_digit_fista/sr0.1_equidistant_lam0.02_it40_fft", variant="amp", split=split,
         #root_dir="/home/cxy/data/code/datasets/sense-fi/Widar_digit_1000", variant="amp", split=split,
         sample_rate=sample_rate, sample_method=sample_method,
         interpolation_method=interpolation_method, use_mask_0=use_mask_0,is_rec=is_rec,
