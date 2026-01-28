@@ -47,18 +47,18 @@ DATASET_NAME="Widar_digit_amp"
 DATASET_ROOT_DIR="../datasets/sense-fi"
 
 
-BASE_EXP_NAME="amp_rate_mask_rec_fastista_0_1_$(date +%Y%m%d_%H%M%S)"
+#BASE_EXP_NAME="amp_rate_mask_rec_fastista_fft_0_02_iter80_$(date +%Y%m%d_%H%M%S)"
 #BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_fftblock1_20260118_003818"
-#BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_hard_dc_lam_1_$(date +%Y%m%d_%H%M%S)"
+BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_hard_dc_lam1_changeloss_beta0_$(date +%Y%m%d_%H%M%S)"
 use_energy_input=0
 #use_mask_0=1
 #is_rec=1
 #istanet csdc
-rec_model_method=fista_dct
-csdc_blocks=40
+rec_model_method=mabf
+csdc_blocks=3
 rec_alpha=0.5
 
-lam_miss=0.0
+lam_miss=1.0
 beta=0.0
 use_mask_0=1
 is_rec=1
@@ -68,12 +68,12 @@ SAMPLE_METHODS=(equidistant)
 SAMPLE_RATES=(0.05 0.1 0.2 0.5)
 #SAMPLE_RATES=(0.0125 0.025 0.05 0.1 0.125 0.25 0.5 1)
 # 你希望使用的物理 GPU（顺序决定分组方式）
-GPU_LIST=(3 4 5)           # 例：两卡
+GPU_LIST=(2 3 4)           # 例：两卡
 #GPU_LIST=(0 1 2 3)      # 例：四卡
 # 每个任务使用几张 GPU：1=单卡；2=两卡DDP；4=四卡DDP
 GPUS_PER_TASK=3
 # 全局 batch（所有GPU加起来）
-GLOBAL_BATCH_SIZE=128
+GLOBAL_BATCH_SIZE=126
 
 #INTERPOLATION_METHODS=(linear cubic nearest)
 INTERPOLATION_METHODS=(linear)

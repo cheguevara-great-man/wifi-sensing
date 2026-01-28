@@ -127,8 +127,14 @@ def train_one_epoch(
             diff = (x_recon_fp32 - inputs_gt_fp32)
             mse_miss = (diff.mul(miss)).pow(2).sum() / (miss.sum() + 1e-8)
             mse_known = (diff.mul(m)).pow(2).sum() / (m.sum() + 1e-8)
-            ce = criterion(outputs, labels)
-            loss = ce + lam_miss * mse_miss + beta * mse_known
+
+            # miss_ratio = Nmiss / Nall（这是你说的“占比随采样率变”的关键）
+            Nall = float(m.numel())
+            miss_ratio = miss.sum() / (Nall + 1e-8)
+            known_ratio = 1.0 - miss_ratio
+            ce = criterion(outputs.float(), labels)
+            loss = ce + lam_miss *  (miss_ratio * mse_miss)  + beta * (known_ratio * mse_known)
+            #loss = ce + lam_miss *  (mse_miss)  + beta * (mse_known)
 
             if log_parts:
                 # miss_ratio = Nmiss / Nall
@@ -233,7 +239,11 @@ def test_one_epoch(model, tensor_loader, criterion, device,
                 mse_miss = (diff.mul(miss)).pow(2).sum() / (miss.sum() + 1e-8)
                 mse_known = (diff.mul(m)).pow(2).sum() / (m.sum() + 1e-8)
                 ce = criterion(outputs, labels)
-                loss = ce + lam_miss * mse_miss + beta * mse_known
+                Nall = float(m.numel())
+                miss_ratio = miss.sum() / (Nall + 1e-8)
+                known_ratio = 1.0 - miss_ratio
+                loss = ce + lam_miss * (miss_ratio * mse_miss) + beta * (known_ratio * mse_known)
+                #loss = ce + lam_miss * mse_miss + beta * mse_known
             bs = labels.size(0)
             total_loss += loss.item() * bs
             total_correct += (outputs.argmax(dim=1) == labels).sum().item()
@@ -293,7 +303,7 @@ def main():
     parser.add_argument('--is_rec', type=int, default=0, choices=[0, 1], help='1: 重建+分类；0: 仅分类')
     parser.add_argument('--rec_alpha', type=float, default=0.5, help='重建损失权重')
     parser.add_argument('--csdc_blocks', type=int, default=1, help='重建blocks数量')
-    parser.add_argument('--rec_model', type=str, default='csdc', choices=['csdc', 'istanet','mabf','fista', 'fista_fft', 'fista_dct'], help='重建模型类型')
+    parser.add_argument('--rec_model', type=str, default='csdc', choices=['csdc', 'istanet','mabf','fista', 'fista_fft', 'fista_dct','fista_blockfft'], help='重建模型类型')
     parser.add_argument('--global_batch_size', type=int, default=128, help='全局batch(所有GPU加起来)')
     parser.add_argument('--num_workers_train', type=int, default=6)
     parser.add_argument('--num_workers_test', type=int, default=2)

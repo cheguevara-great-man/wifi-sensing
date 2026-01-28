@@ -597,18 +597,98 @@ def _idct_ortho(Xo: torch.Tensor) -> torch.Tensor:
     v = torch.fft.ifft(V_full, dim=1).real
     return v[:, :N].reshape(*Xo.shape)
 
-def _prox_l1_transform(v: torch.Tensor, lam: float, prior: str = "fft") -> torch.Tensor:
+def _prox_l1_transform(
+    v: torch.Tensor,
+    lam: float,
+    prior: str = "fft",
+    block_win: int = 256,
+    block_hop: int = 128,
+    block_nfft: int = 256,
+) -> torch.Tensor:
     prior = prior.lower()
     if prior == "dct":
         V = _dct_ortho(v)
         V = _soft_threshold_real(V, lam)
         return _idct_ortho(V)
+
     elif prior == "fft":
         V = torch.fft.rfft(v, dim=-1, norm="ortho")
         V = _soft_threshold_complex(V, lam)
         return torch.fft.irfft(V, n=v.shape[-1], dim=-1, norm="ortho")
+
+    elif prior == "blockfft":
+        X, meta = _block_fft_1d(v, win=block_win, hop=block_hop, n_fft=block_nfft)
+        X = _soft_threshold_complex(X, lam)
+        return _block_ifft_1d(X, meta)
+
     else:
         raise ValueError(f"Unknown prior: {prior}")
+
+def _block_fft_1d(v: torch.Tensor, win: int, hop: int, n_fft: int):
+    """
+    v: (B, T) real
+    Returns:
+      X: (B, n_frames, bins) complex
+      meta: dict {T_pad, n_frames, win, hop, n_fft}
+    """
+    if v.dim() != 2:
+        raise ValueError(f"Expected (B,T), got {tuple(v.shape)}")
+    B, T = v.shape
+    win = int(win); hop = int(hop); n_fft = int(n_fft)
+    if n_fft < win:
+        raise ValueError(f"n_fft ({n_fft}) must be >= win ({win})")
+
+    # compute number of frames and pad
+    if T < win:
+        n_frames = 1
+    else:
+        n_frames = int(math.ceil((T - win) / hop)) + 1
+    T_pad = (n_frames - 1) * hop + win
+    pad_right = max(0, T_pad - T)
+    if pad_right > 0:
+        v = F.pad(v, (0, pad_right))
+
+    # unfold frames: (B, n_frames, win)
+    frames = v.unfold(dimension=1, size=win, step=hop)
+
+    # hann window (device/dtype follow v)
+    window = torch.hann_window(win, periodic=True, device=v.device, dtype=v.dtype)
+    frames = frames * window.view(1, 1, win)
+
+    X = torch.fft.rfft(frames, n=n_fft, dim=-1)  # (B, n_frames, bins)
+    meta = {"T_pad": T_pad, "n_frames": n_frames, "win": win, "hop": hop, "n_fft": n_fft, "T_out": T}
+    return X, meta
+
+
+def _block_ifft_1d(X: torch.Tensor, meta: dict):
+    """
+    X: (B, n_frames, bins) complex
+    Returns:
+      v: (B, T_out) real
+    """
+    if X.dim() != 3:
+        raise ValueError(f"Expected (B,n_frames,bins), got {tuple(X.shape)}")
+    B, n_frames, _ = X.shape
+    win = int(meta["win"]); hop = int(meta["hop"]); n_fft = int(meta["n_fft"])
+    T_pad = int(meta["T_pad"]); T_out = int(meta["T_out"])
+
+    window = torch.hann_window(win, periodic=False, device=X.device, dtype=X.real.dtype)
+
+    frames = torch.fft.irfft(X, n=n_fft, dim=-1)[..., :win]   # (B, n_frames, win)
+    frames = frames * window.view(1, 1, win)
+
+    out = frames.new_zeros((B, T_pad))
+    wsum = frames.new_zeros((B, T_pad))
+    w2 = (window ** 2).view(1, win)
+
+    # overlap-add（for循环在CPU，但每次是GPU张量切片加法；数据不回CPU，不是IO瓶颈）
+    for i in range(n_frames):
+        s0 = i * hop
+        out[:, s0:s0 + win] += frames[:, i, :]
+        wsum[:, s0:s0 + win] += w2
+
+    out = out / (wsum + 1e-8)
+    return out[:, :T_out]
 
 @torch.no_grad()
 def _fista_recon_1d(
@@ -618,6 +698,7 @@ def _fista_recon_1d(
     lam: float = 0.01,
     prior: str = "fft",
     hard_dc: bool = False,
+    block_win=256, block_hop=128, block_nfft=256,
 ) -> torch.Tensor:
     """
     Solve: min_x 0.5|| M(x-y) ||^2 + lam || W x ||_1   (W=DCT or rFFT along time)
@@ -633,7 +714,10 @@ def _fista_recon_1d(
     for _ in range(int(n_iter)):
         grad = (z - y) * m          # M(z-y)
         v = z - grad                # step=1
-        x_next = _prox_l1_transform(v, lam=lam, prior=prior)
+        x_next = _prox_l1_transform(
+            v, lam=lam, prior=prior,
+            block_win=block_win, block_hop=block_hop, block_nfft=block_nfft
+        )
 
         t_next = 0.5 * (1.0 + torch.sqrt(1.0 + 4.0 * t * t))
         z = x_next + ((t - 1.0) / t_next) * (x_next - x)
@@ -657,7 +741,8 @@ class WidarDigit_FISTARecCls(nn.Module):
         n_iter: int = 30,
         lam: float = 0.01,
         prior: str = "fft",   # "fft"(recommended) or "dct"
-        hard_dc: bool = True,
+        hard_dc: bool = False,
+        block_win: int = 256, block_hop: int = 128, block_nfft: int = 256
     ):
         super().__init__()
         self.classifier = classifier
@@ -665,7 +750,9 @@ class WidarDigit_FISTARecCls(nn.Module):
         self.lam = float(lam)
         self.prior = str(prior)
         self.hard_dc = bool(hard_dc)
-
+        self.block_win = int(block_win)
+        self.block_hop = int(block_hop)
+        self.block_nfft = int(block_nfft)
     def forward(self, x_lr, mask):
         if x_lr.dim() == 3:
             x_lr = x_lr.unsqueeze(1)
@@ -680,7 +767,7 @@ class WidarDigit_FISTARecCls(nn.Module):
         m = mask.squeeze(1).transpose(1, 2).contiguous().view(B * Fdim, T)
 
         # 全程在 x_lr 所在 device 上跑：如果 inputs 在 cuda:local_rank，就用那张卡
-        x_rec = _fista_recon_1d(y, m, n_iter=self.n_iter, lam=self.lam, prior=self.prior, hard_dc=self.hard_dc)
+        x_rec = _fista_recon_1d(y, m, n_iter=self.n_iter, lam=self.lam, prior=self.prior, hard_dc=self.hard_dc,block_win=self.block_win, block_hop=self.block_hop, block_nfft=self.block_nfft)
 
         # (B*F,T) -> (B,F,T) -> (B,1,T,F)
         x_recon = x_rec.view(B, Fdim, T).transpose(1, 2).contiguous().unsqueeze(1)
@@ -1087,7 +1174,7 @@ class DC_mabf(nn.Module):
         self.mode = mode.lower()
 
         # Soft DC 的参数设置
-        if self.mode == 'soft':
+        if self.mode == 'hard':
             lamb = float(max(1e-4, min(1-1e-4, lamb)))
             raw = math.log(lamb / (1.0 - lamb))
             if learnable:
@@ -1220,20 +1307,33 @@ def _get_widar_model_base(
             dc_mode='hard',
             dc_lamb=0.9,
         )
+
     elif rec_name.startswith("fista"):
-        # 支持：fista_fft / fista_dct / fista(默认fft)
+        # 支持：fista / fista_fft / fista_dct / fista_blockfft
+        # 你也可以再加 fista_bfft 的别名
         if rec_name.endswith("_dct"):
             prior = "dct"
+        elif rec_name.endswith("_blockfft") or rec_name.endswith("_bfft"):
+            prior = "blockfft"
         elif rec_name.endswith("_fft"):
-            prior = "fft"   # rec_name.endswith("_fft") 或者不带后缀都走 fft
+            prior = "fft"
         else:
             prior = "fft"
+
+        # 可选：给 blockfft 提供默认参数（也可从 args 传进来）
+        block_win = 256
+        block_hop = 128
+        block_nfft = 256
+
         return WidarDigit_FISTARecCls(
             classifier=classifier,
-                n_iter=csdc_blocks,
-            lam=0.01,
+            n_iter=csdc_blocks,
+            lam=0.02,
             prior=prior,
-            hard_dc=False
+            hard_dc=False,
+            block_win=block_win,
+            block_hop=block_hop,
+            block_nfft=block_nfft,
         )
 
 
