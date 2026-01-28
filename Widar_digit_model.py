@@ -1512,6 +1512,8 @@ class WidarDigit_MABF2RecCls(nn.Module):
 
     def forward(self, x_lr, mask):
         x_a = _split_ant_subc(x_lr, A=self.A, S=self.S)  # (B,A,T,S)
+        if self.training:
+            x_a.requires_grad_(True)
         x0_a = x_a
         mask_a = _split_ant_subc(mask, A=self.A, S=self.S)
 
@@ -1581,6 +1583,7 @@ def _get_widar_model_base(
             stages=csdc_blocks,
             dc_mode='hard',
             dc_lamb=0.9,
+            use_checkpoint=True,
         )
 
     elif rec_name.startswith("fista"):
