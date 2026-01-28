@@ -1300,6 +1300,7 @@ class MABFStage(nn.Module):
         time_depth: int = 8,
         freq_C: int = 96,
         freq_depth: int = 6,
+        gate_hidden: int = 24,
         win: int = 256,
         hop: int = 128,
         n_fft: int = 256,
@@ -1308,7 +1309,7 @@ class MABFStage(nn.Module):
         super().__init__()
         self.time = TimePrior(A=A, S=S, C=time_C, depth=time_depth)
         self.freq = DopplerBlockFFTPrior(A=A, S=S, C=freq_C, depth=freq_depth, win=win, hop=hop, n_fft=n_fft, min_frames=min_frames)
-        self.fuse = GateFuseA(A=A)
+        self.fuse = GateFuseA(A=A, hidden=gate_hidden)
 
     def forward(self, x_a):
         # 1. 定义一个单纯的前向函数
@@ -1437,6 +1438,11 @@ class WidarDigit_MABFRecCls(nn.Module):
         stages: int = 3,
         A: int = 3,
         S: int = 30,
+        time_C: int = 96,
+        time_depth: int = 8,
+        freq_C: int = 96,
+        freq_depth: int = 6,
+        gate_hidden: int = 24,
         # block-fft config
         win: int = 256,
         hop: int = 128,
@@ -1450,7 +1456,13 @@ class WidarDigit_MABFRecCls(nn.Module):
         self.stages = max(1, int(stages))
 
         self.stage_list = nn.ModuleList([
-            MABFStage(A=A, S=S, win=win, hop=hop, n_fft=n_fft, min_frames=min_frames)
+            MABFStage(
+                A=A, S=S,
+                time_C=time_C, time_depth=time_depth,
+                freq_C=freq_C, freq_depth=freq_depth,
+                gate_hidden=gate_hidden,
+                win=win, hop=hop, n_fft=n_fft, min_frames=min_frames,
+            )
             for _ in range(self.stages)
         ])
         self.dc = DC_mabf(mode=dc_mode, lamb=dc_lamb, learnable=False)
@@ -1475,7 +1487,7 @@ class WidarDigit_MABFRecCls(nn.Module):
 
 
 class WidarDigit_MABF2RecCls(nn.Module):
-    """Lightweight MABF variant (MABF2) with cheaper Doppler prior."""
+    """Lightweight MABF variant (MABF2/1D-mix) with cheaper Doppler prior."""
 
     def __init__(
         self,
@@ -1586,14 +1598,35 @@ def _get_widar_model_base(
             dc_mode='hard',
             dc_lamb=0.9,
         )
-    elif rec_name == "mabf2":
-        # Lightweight MABF variant (MABF2)
+    elif rec_name == "mabf_c":
+        # Configurable MABF (pass-through params live here for easy tuning)
+        return WidarDigit_MABFRecCls(
+            classifier=classifier,
+            stages=csdc_blocks,
+            A=3,
+            S=30,
+            time_C=96,
+            time_depth=8,
+            freq_C=96,
+            freq_depth=6,
+            gate_hidden=24,
+            win=256,
+            hop=128,
+            n_fft=256,
+            min_frames=4,
+            dc_mode='hard',
+            dc_lamb=0.9,
+        )
+    elif rec_name == "mabf_1d_mix" or rec_name == "mabf2":
+        # Lightweight MABF variant (1D-mix). "mabf2" kept for backward compatibility.
         return WidarDigit_MABF2RecCls(
             classifier=classifier,
             stages=csdc_blocks,
             dc_mode='hard',
             dc_lamb=0.9,
             use_checkpoint=True,
+            s_mix_depth=0,  # 关 S-mix
+            a_mix=False,  # 关 A-mix
         )
 
     elif rec_name.startswith("fista"):
