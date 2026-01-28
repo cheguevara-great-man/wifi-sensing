@@ -966,6 +966,50 @@ class BlockIFFT(nn.Module):
         return x
 
 
+class BlockIFFTFold(nn.Module):
+    """Inverse of BlockFFT using vectorized overlap-add via fold (faster than Python loop)."""
+
+    def __init__(self, win: int = 256, hop: int = 128, n_fft: int = 256):
+        super().__init__()
+        self.win = int(win)
+        self.hop = int(hop)
+        self.n_fft = int(n_fft)
+        self.register_buffer('_hann', torch.hann_window(self.win, periodic=True), persistent=False)
+
+    def forward(self, X: torch.Tensor, meta: dict, T_out: int):
+        """
+        X: complex (B,A,S,frames,bins)
+        Returns x_time: (B,A,T_out,S)
+        """
+        if X.dim() != 5:
+            raise ValueError(f"Expected (B,A,S,frames,bins), got {tuple(X.shape)}")
+        B, A, S, n_frames, _ = X.shape
+        win, hop = self.win, self.hop
+
+        window = self._hann
+        if window.device != X.device or window.dtype != X.real.dtype:
+            window = window.to(device=X.device, dtype=X.real.dtype)
+
+        Xf = X.contiguous().view(B * A * S, n_frames, -1)
+        frames = torch.fft.irfft(Xf, n=self.n_fft, dim=-1)[..., :win]  # (BAS, n_frames, win)
+        frames = frames * window.view(1, 1, win)
+
+        T_pad = int(meta.get('T_pad', (n_frames - 1) * hop + win))
+
+        frames_t = frames.transpose(1, 2).contiguous()  # (BAS, win, n_frames)
+        out = F.fold(frames_t, output_size=(1, T_pad), kernel_size=(1, win), stride=(1, hop))
+        out = out.reshape(B * A * S, T_pad)
+
+        w2 = (window ** 2).view(1, win, 1).expand(1, win, n_frames).contiguous().to(device=frames.device, dtype=frames.dtype)
+        wsum = F.fold(w2, output_size=(1, T_pad), kernel_size=(1, win), stride=(1, hop))
+        wsum = wsum.reshape(1, T_pad)
+
+        out = out / (wsum + 1e-8)
+        out = out[:, :T_out]
+        x = out.view(B, A, S, T_out).permute(0, 1, 3, 2).contiguous()  # (B,A,T,S)
+        return x
+
+
 class _TSResBlock(nn.Module):
     """Time+Subcarrier separable residual block (2D conv over (T,S))."""
 
@@ -1039,6 +1083,129 @@ class _F3DResBlock(nn.Module):
         x = F.gelu(self.dw(x))
         x = self.pw2(F.gelu(self.pw1(x)))
         return r + x
+
+
+class _FHResBlock(nn.Module):
+    """2D residual block over (freq_bins, frames) for each (A,S)."""
+
+    def __init__(self, C: int, kF: int = 3, kH: int = 3, gn_groups: int = 8, expand: int = 2):
+        super().__init__()
+        padF = (kF // 2)
+        padH = (kH // 2)
+        self.norm = nn.GroupNorm(num_groups=min(gn_groups, C), num_channels=C)
+        self.dw = nn.Conv2d(C, C, kernel_size=(kF, kH), padding=(padF, padH), groups=C, bias=False)
+        self.pw1 = nn.Conv2d(C, C * expand, kernel_size=1, bias=False)
+        self.pw2 = nn.Conv2d(C * expand, C, kernel_size=1, bias=False)
+
+    def forward(self, x):
+        r = x
+        x = self.norm(x)
+        x = F.gelu(self.dw(x))
+        x = self.pw2(F.gelu(self.pw1(x)))
+        return r + x
+
+
+class _SubcarrierMix2D(nn.Module):
+    """Depthwise+pointwise 2D conv along subcarriers S (input: B*A, C, S, W)."""
+
+    def __init__(self, C: int, kS: int = 3):
+        super().__init__()
+        pad = kS // 2
+        self.dw = nn.Conv2d(C, C, kernel_size=(kS, 1), padding=(pad, 0), groups=C, bias=False)
+        self.pw = nn.Conv2d(C, C, kernel_size=1, bias=False)
+
+    def forward(self, x):
+        return x + self.pw(F.gelu(self.dw(x)))
+
+
+class _AntennaMix(nn.Module):
+    """Small linear mix across antenna dimension A (shared across all positions)."""
+
+    def __init__(self, A: int = 3):
+        super().__init__()
+        self.A = int(A)
+        self.delta = nn.Parameter(torch.zeros(self.A, self.A))
+        self.register_buffer("eye", torch.eye(self.A), persistent=False)
+
+    def forward(self, x):
+        # x: (B,A,S,C,F,H) -> mix A -> (B,A,S,C,F,H)
+        y = x.permute(0, 2, 3, 4, 5, 1).contiguous()  # (B,S,C,F,H,A)
+        eye = self.eye
+        if eye.device != y.device or eye.dtype != y.dtype:
+            eye = eye.to(device=y.device, dtype=y.dtype)
+        W = eye + 0.1 * self.delta.to(dtype=y.dtype)
+        y = torch.matmul(y, W.t())
+        return y.permute(0, 5, 1, 2, 3, 4).contiguous()
+
+
+class DopplerBlockFFTPriorLite(nn.Module):
+    """Lite Doppler prior: per-(A,S) 2D conv on (F,H) spectra."""
+
+    def __init__(
+        self,
+        A: int = 3,
+        S: int = 30,
+        C: int = 32,
+        depth: int = 2,
+        win: int = 256,
+        hop: int = 128,
+        n_fft: int = 256,
+        min_frames: int = 4,
+        use_fold: bool = True,
+        s_mix_depth: int = 1,
+        s_mix_ks: int = 3,
+        a_mix: bool = True,
+    ):
+        super().__init__()
+        self.A, self.S = int(A), int(S)
+        self.fft = BlockFFT(win=win, hop=hop, n_fft=n_fft, min_frames=min_frames)
+        self.ifft = BlockIFFTFold(win=win, hop=hop, n_fft=n_fft) if use_fold else BlockIFFT(win=win, hop=hop, n_fft=n_fft)
+
+        self.in_proj = nn.Conv2d(2, C, kernel_size=1, bias=False)
+        if depth > 0:
+            self.blocks = nn.Sequential(*[_FHResBlock(C, kF=3, kH=3) for _ in range(depth)])
+        else:
+            self.blocks = nn.Identity()
+        if s_mix_depth > 0:
+            self.s_mix = nn.Sequential(*[_SubcarrierMix2D(C, kS=s_mix_ks) for _ in range(s_mix_depth)])
+        else:
+            self.s_mix = None
+        self.a_mix = _AntennaMix(A=A) if a_mix else None
+        self.out_proj = nn.Conv2d(C, 2, kernel_size=1, bias=True)
+
+    def forward(self, x_a):
+        """x_a: (B,A,T,S) -> (B,A,T,S)"""
+        X, meta = self.fft(x_a)  # (B,A,S,H,F) complex
+        B, A, S, H, Fbins = X.shape
+
+        # (B,A,S,H,F) -> (B*A*S, 2, F, H)
+        ri = torch.stack([X.real, X.imag], dim=-1)  # (B,A,S,H,F,2)
+        ri = ri.permute(0, 1, 2, 5, 4, 3).contiguous().view(B * A * S, 2, Fbins, H)
+
+        y = self.in_proj(ri)
+        y = self.blocks(y)
+
+        # optional axial fusion across S and A
+        if self.s_mix is not None or self.a_mix is not None:
+            y = y.view(B, A, S, -1, Fbins, H)  # (B,A,S,C,F,H)
+            if self.s_mix is not None:
+                ys = y.permute(0, 1, 3, 2, 4, 5).contiguous()  # (B,A,C,S,F,H)
+                ys = ys.view(B * A, -1, S, Fbins * H)
+                ys = self.s_mix(ys)
+                y = ys.view(B, A, -1, S, Fbins, H).permute(0, 1, 3, 2, 4, 5).contiguous()
+            if self.a_mix is not None:
+                y = self.a_mix(y)
+            y = y.contiguous().view(B * A * S, -1, Fbins, H)
+
+        delta = self.out_proj(y)
+        ri_out = ri + delta
+
+        # back to complex (B,A,S,H,F)
+        ri_out = ri_out.view(B, A, S, 2, Fbins, H).permute(0, 1, 2, 5, 4, 3).contiguous()  # (B,A,S,H,F,2)
+        X_out = torch.complex(ri_out[..., 0], ri_out[..., 1])
+
+        x_time = self.ifft(X_out, meta=meta, T_out=x_a.shape[2])  # (B,A,T,S)
+        return x_time
 
 
 class DopplerBlockFFTPrior(nn.Module):
@@ -1155,6 +1322,46 @@ class MABFStage(nn.Module):
         return x
 
 
+class MABFStageLite(nn.Module):
+    def __init__(
+        self,
+        A: int = 3,
+        S: int = 30,
+        time_C: int = 48,
+        time_depth: int = 4,
+        freq_C: int = 32,
+        freq_depth: int = 2,
+        gate_hidden: int = 16,
+        win: int = 256,
+        hop: int = 128,
+        n_fft: int = 256,
+        min_frames: int = 4,
+        s_mix_depth: int = 1,
+        s_mix_ks: int = 3,
+        a_mix: bool = True,
+        use_checkpoint: bool = False,
+    ):
+        super().__init__()
+        self.time = TimePrior(A=A, S=S, C=time_C, depth=time_depth)
+        self.freq = DopplerBlockFFTPriorLite(
+            A=A, S=S, C=freq_C, depth=freq_depth,
+            win=win, hop=hop, n_fft=n_fft, min_frames=min_frames,
+            use_fold=True, s_mix_depth=s_mix_depth, s_mix_ks=s_mix_ks, a_mix=a_mix,
+        )
+        self.fuse = GateFuseA(A=A, hidden=gate_hidden)
+        self.use_checkpoint = bool(use_checkpoint)
+
+    def forward(self, x_a):
+        def run_forward(x):
+            x_t = self.time(x)
+            x_f = self.freq(x)
+            return self.fuse(x_t, x_f)
+
+        if self.use_checkpoint and self.training and x_a.requires_grad:
+            return checkpoint(run_forward, x_a, use_reentrant=False)
+        return run_forward(x_a)
+
+
 class DC_mabf(nn.Module):
     """
     通用数据一致性层 (Data Consistency Layer).
@@ -1256,6 +1463,66 @@ class WidarDigit_MABFRecCls(nn.Module):
         logits = self.classifier(x_recon)
         return logits, x_recon
 
+
+class WidarDigit_MABF2RecCls(nn.Module):
+    """Lightweight MABF variant (MABF2) with cheaper Doppler prior."""
+
+    def __init__(
+        self,
+        classifier: nn.Module,
+        stages: int = 3,
+        A: int = 3,
+        S: int = 30,
+        # time/freq prior config
+        time_C: int = 48,
+        time_depth: int = 4,
+        freq_C: int = 48,
+        freq_depth: int = 3,
+        gate_hidden: int = 16,
+        s_mix_depth: int = 1,
+        s_mix_ks: int = 3,
+        a_mix: bool = True,
+        # block-fft config
+        win: int = 256,
+        hop: int = 128,
+        n_fft: int = 256,
+        min_frames: int = 4,
+        dc_mode='hard',
+        dc_lamb=0.1,
+        use_checkpoint: bool = False,
+    ):
+        super().__init__()
+        self.A, self.S = int(A), int(S)
+        self.stages = max(1, int(stages))
+
+        self.stage_list = nn.ModuleList([
+            MABFStageLite(
+                A=A, S=S,
+                time_C=time_C, time_depth=time_depth,
+                freq_C=freq_C, freq_depth=freq_depth,
+                gate_hidden=gate_hidden,
+                s_mix_depth=s_mix_depth, s_mix_ks=s_mix_ks, a_mix=a_mix,
+                win=win, hop=hop, n_fft=n_fft, min_frames=min_frames,
+                use_checkpoint=use_checkpoint,
+            )
+            for _ in range(self.stages)
+        ])
+        self.dc = DC_mabf(mode=dc_mode, lamb=dc_lamb, learnable=False)
+        self.classifier = classifier
+
+    def forward(self, x_lr, mask):
+        x_a = _split_ant_subc(x_lr, A=self.A, S=self.S)  # (B,A,T,S)
+        x0_a = x_a
+        mask_a = _split_ant_subc(mask, A=self.A, S=self.S)
+
+        for st in self.stage_list:
+            x_a = st(x_a)
+            x_a = self.dc(x_a, x0_a, mask_a)
+
+        x_recon = _merge_ant_subc(x_a, A=self.A, S=self.S)       # (B,1,T,90)
+        logits = self.classifier(x_recon)
+        return logits, x_recon
+
 # ======================================================================================
 # Factory functions (what you asked for)
 # ======================================================================================
@@ -1302,6 +1569,14 @@ def _get_widar_model_base(
         # MABF is designed for amp (F=90) with explicit antennas (A=3,S=30)
         #return WidarDigit_MABFRecCls(classifier=classifier, stages=csdc_blocks)
         return WidarDigit_MABFRecCls(
+            classifier=classifier,
+            stages=csdc_blocks,
+            dc_mode='hard',
+            dc_lamb=0.9,
+        )
+    elif rec_name == "mabf2":
+        # Lightweight MABF variant (MABF2)
+        return WidarDigit_MABF2RecCls(
             classifier=classifier,
             stages=csdc_blocks,
             dc_mode='hard',
