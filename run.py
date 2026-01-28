@@ -389,6 +389,7 @@ def main():
         if ddp and hasattr(train_loader.sampler, "set_epoch"):
             train_loader.sampler.set_epoch(epoch)
         if is_main():print(f"--- Epoch {epoch}/{train_epoch} ---")
+        epoch_start = time.time()
         log_parts = (epoch <= 3)# 前3个epoch打印loss分量
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, device, optimizer,
                                                 is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha,lam_miss=args.lam_miss,beta=args.beta,log_parts=log_parts)
@@ -397,6 +398,9 @@ def main():
         test_loss, test_acc = test_one_epoch(model, test_loader, criterion, device,
                                              is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha, lam_miss=args.lam_miss,beta=args.beta)
         if is_main():print(f"Test/Validation -> Loss: {test_loss:.5f}, Accuracy: {test_acc:.4f}")
+        if is_main():
+            epoch_time = time.time() - epoch_start
+            print(f"Epoch time: {epoch_time:.2f} s")
 
         # ==================== 5. 新增：收集当前epoch的数据 ====================
         train_history.append({'epoch': epoch, 'loss': train_loss, 'accuracy': train_acc})
