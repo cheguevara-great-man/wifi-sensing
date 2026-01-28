@@ -996,13 +996,23 @@ class BlockIFFTFold(nn.Module):
 
         T_pad = int(meta.get('T_pad', (n_frames - 1) * hop + win))
 
-        frames_t = frames.transpose(1, 2).contiguous()  # (BAS, win, n_frames)
-        out = F.fold(frames_t, output_size=(1, T_pad), kernel_size=(1, win), stride=(1, hop))
-        out = out.reshape(B * A * S, T_pad)
+        if n_frames <= 4:
+            # small H: loop is cheaper than fold
+            out = frames.new_zeros((B * A * S, T_pad))
+            wsum = frames.new_zeros((B * A * S, T_pad))
+            w2 = (window ** 2).view(1, win)
+            for i in range(n_frames):
+                s0 = i * hop
+                out[:, s0:s0 + win] += frames[:, i, :]
+                wsum[:, s0:s0 + win] += w2
+        else:
+            frames_t = frames.transpose(1, 2).contiguous()  # (BAS, win, n_frames)
+            out = F.fold(frames_t, output_size=(1, T_pad), kernel_size=(1, win), stride=(1, hop))
+            out = out.reshape(B * A * S, T_pad)
 
-        w2 = (window ** 2).view(1, win, 1).expand(1, win, n_frames).contiguous().to(device=frames.device, dtype=frames.dtype)
-        wsum = F.fold(w2, output_size=(1, T_pad), kernel_size=(1, win), stride=(1, hop))
-        wsum = wsum.reshape(1, T_pad)
+            w2 = (window ** 2).view(1, win, 1).expand(1, win, n_frames).contiguous().to(device=frames.device, dtype=frames.dtype)
+            wsum = F.fold(w2, output_size=(1, T_pad), kernel_size=(1, win), stride=(1, hop))
+            wsum = wsum.reshape(1, T_pad)
 
         out = out / (wsum + 1e-8)
         out = out[:, :T_out]
