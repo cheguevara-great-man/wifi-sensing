@@ -1058,7 +1058,7 @@ class TimePrior(nn.Module):
 
         blocks = []
         for i in range(depth):
-            dT = 2 ** min(i, 5)  # up to 32
+            dT = 2 ** min(i, 5)  # up to 32  1 2 4 8 16 32 32 32
             dS = 2 ** min(i // 2, 3)  # 1,1,2,2,4,4,8,8
             blocks.append(_TSResBlock(C, kT=5, kS=3, dT=dT, dS=dS))
         self.blocks = nn.Sequential(*blocks)
@@ -1605,10 +1605,10 @@ def _get_widar_model_base(
             stages=csdc_blocks,
             A=3,
             S=30,
-            time_C=96,
-            time_depth=8,
-            freq_C=96,
-            freq_depth=6,
+            time_C=48,
+            time_depth=3,
+            freq_C=32,
+            freq_depth=3,
             gate_hidden=24,
             win=256,
             hop=128,
