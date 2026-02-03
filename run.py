@@ -293,10 +293,12 @@ def main():
     # 新增的参数，用于自定义实验名称，并设为必填项
     #parser.add_argument('--exp_name', required=True, type=str, help='自定义实验名称，将用于创建模型保存目录。')
     parser.add_argument('--sample_rate', type=float, default=1.0, help='二次降采样的比例 (0.05到1.0)，对应25Hz到500Hz。默认为1.0，即不进行二次采样。')
-    parser.add_argument('--sample_method', type=str,default='uniform_nearest',choices=['uniform_nearest', 'equidistant', 'gaussian', 'poisson'],help='降采样方法。默认为 "uniform_nearest"。')
+    parser.add_argument('--sample_method', type=str,default='uniform_nearest',choices=['uniform_nearest', 'equidistant', 'gaussian', 'poisson', 'trafficlike'],help='降采样方法。默认为 "uniform_nearest"。')
     parser.add_argument('--interpolation', type=str,default='linear',choices=['linear', 'cubic', 'nearest', 'idw', 'rbf','spline','akima'],help='升采样时使用的插值方法。默认为 "linear"。')
     parser.add_argument('--use_energy_input', type=int, default=1, choices=[0, 1],help='是否使用能量信息 (1:是, 0:否)。默认为 1 (是)。')
     parser.add_argument('--use_mask_0', type=int, default=0, choices=[0, 1 , 2],help='是否使用 mask_0 (1:是, 0:否,2:不mask直接return降采样后的)。默认为 0 (否)。')
+    parser.add_argument('--traffic_train_pt', type=str, default='/home/cxy/data/code/datasets/sense-fi/Widar_digit/mask_10_90Hz_random/train.pt', help='trafficlike train masks .pt')
+    parser.add_argument('--traffic_test_pt', type=str, default='/home/cxy/data/code/datasets/sense-fi/Widar_digit/mask_10_90Hz_random/test.pt', help='trafficlike test masks .pt')
     # 新增两个参数，用于接收完整的保存目录
     parser.add_argument('--model_save_dir', required=True, type=str, help='模型检查点的完整保存目录。')
     parser.add_argument('--metrics_save_dir', required=True, type=str, help='性能指标文件的完整保存目录。')
@@ -336,7 +338,9 @@ def main():
         batch_size=per_gpu_bs,
         num_workers_train=args.num_workers_train,
         num_workers_test=args.num_workers_test,
-        distributed=ddp, rank=rank, world_size=world_size
+        distributed=ddp, rank=rank, world_size=world_size,
+        traffic_train_pt=args.traffic_train_pt,
+        traffic_test_pt=args.traffic_test_pt
     )
 
     #train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root,args.sample_rate, args.sample_method ,args.interpolation,args.use_energy_input ,args.use_mask_0 ,args.is_rec,args.csdc_blocks)
@@ -378,6 +382,12 @@ def main():
     train_history = []
     test_history = []
 
+    # 固定一份验证掩码子集（用于早停更稳定）
+    if hasattr(test_loader.dataset, "set_rate_filter"):
+        test_loader.dataset.set_rate_filter(None)
+    if hasattr(test_loader.dataset, "set_eval_subset"):
+        test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=0)
+
     # [新增] 早停相关的变量
     best_test_acc = 0.0  # 记录历史最佳准确率
     patience = 20  # 容忍度：如果 20 个 epoch 没提升就停止
@@ -388,6 +398,8 @@ def main():
     for epoch in range(1, train_epoch + 1):  # 循环从1开始，方便与epoch编号对应
         if ddp and hasattr(train_loader.sampler, "set_epoch"):
             train_loader.sampler.set_epoch(epoch)
+        if hasattr(train_loader.dataset, "set_epoch"):
+            train_loader.dataset.set_epoch(epoch)
         if is_main():print(f"--- Epoch {epoch}/{train_epoch} ---")
         epoch_start = time.time()
         log_parts = (epoch <= 3)# 前3个epoch打印loss分量
@@ -459,6 +471,35 @@ def main():
     if is_main():
         print(f"📊 正在保存测试历史到: {test_metrics_path}")
         save_metrics_to_csv(test_metrics_path, test_history)
+
+    # per-rate evaluation for trafficlike masks
+    if hasattr(test_loader.dataset, "get_available_rates"):
+        rates = test_loader.dataset.get_available_rates()
+        if rates:
+            rate_history = []
+            if is_main():
+                print("Running per-rate evaluation...")
+            for r in rates:
+                if hasattr(test_loader.dataset, "set_rate_filter"):
+                    test_loader.dataset.set_rate_filter(r)
+                if hasattr(test_loader.dataset, "set_eval_subset"):
+                    test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=1000 + int(r))
+                r_loss, r_acc = test_one_epoch(model, test_loader, criterion, device,
+                                               is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha, lam_miss=args.lam_miss,beta=args.beta)
+                if is_main():
+                    print(f"[rate {r}] Loss: {r_loss:.5f}, Accuracy: {r_acc:.4f}")
+                rate_history.append({'rate_hz': int(r), 'loss': r_loss, 'accuracy': r_acc})
+            if hasattr(test_loader.dataset, "set_rate_filter"):
+                test_loader.dataset.set_rate_filter(None)
+            if hasattr(test_loader.dataset, "set_eval_subset"):
+                test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=0)
+            if is_main():
+                rate_path = os.path.join(args.metrics_save_dir, 'test_metrics_by_rate.csv')
+                with open(rate_path, 'w', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=['rate_hz', 'loss', 'accuracy'])
+                    writer.writeheader()
+                    writer.writerows(rate_history)
+                print(f"Saved per-rate metrics to: {rate_path}")
 
     #print(f"💾 所有检查点已保存在目录: {args.model_save_dir}")
     if ddp:
