@@ -315,6 +315,28 @@ def resample_signal_data(x, sample_rate, sample_method, use_mask_0, interpolatio
         return x, mask
     else:
         return x
+
+
+def _interp_from_mask(x, mask_1d, interpolation_method):
+    """
+    Interpolate x (T, F) using irregular samples defined by mask_1d (T,).
+    Only linear/nearest/cubic are used here; others fall back to linear.
+    """
+    if x.ndim != 2:
+        raise ValueError(f"interp expects x shape (T,F), got {x.shape}")
+    T = x.shape[0]
+    idx = np.nonzero(mask_1d)[0]
+    if idx.size < 2:
+        # not enough points to interpolate
+        return x
+    x_new = np.arange(T)
+    method = interpolation_method if interpolation_method in ['linear', 'nearest', 'cubic'] else 'linear'
+    out = np.zeros_like(x, dtype=np.float32)
+    for c in range(x.shape[1]):
+        y_known = x[idx, c]
+        f = interp1d(idx, y_known, kind=method, fill_value="extrapolate")
+        out[:, c] = f(x_new)
+    return out
 # ======================================================================================
 # Widar3 digit (sharded .npz) loader
 # Expected structure (root_dir):
@@ -584,7 +606,13 @@ class WidarDigitShardDataset(Dataset):
             mask = mask_1d.astype(np.float32, copy=False)[:, None]
             if x.shape[1] != 1:
                 mask = np.repeat(mask, x.shape[1], axis=1)
-            x = x * mask
+            x_masked = x * mask
+            if self.return_rec:
+                # reconstruction mode: return masked x + mask
+                x = x_masked
+            else:
+                # classification mode: interpolate from masked samples
+                x = _interp_from_mask(x_masked, mask_1d, self.interpolation_method)
         elif self.sample_rate < 1.0 or self.use_mask_0:
             # resample_signal_data 期望 (C,T)，所以转置
             if self.return_rec:
