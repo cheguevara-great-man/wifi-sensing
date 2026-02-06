@@ -48,16 +48,17 @@ DATASET_ROOT_DIR="../datasets/sense-fi"
 
 
 #BASE_EXP_NAME="amp_rate_mask_rec_fastista_fft_0_02_iter80_$(date +%Y%m%d_%H%M%S)"
-#BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_fftblock1_20260118_003818"
+#BASE_EXP_NAME="amp_rate_mask_trafficlike_intrtp_l_rec_mabfx_fftblk_1_blk1_32-3-48-3_hard_dc_lam0_5_changeloss_beta0_20260204_110703"
 #BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_hard_dc_lam1_changeloss_beta0_$(date +%Y%m%d_%H%M%S)"
-BASE_EXP_NAME="amp_rate_mask_trafficlike_rec_mabfx_blk1_48-4-48-3_hard_dc_lam0_5_changeloss_beta0_$(date +%Y%m%d_%H%M%S)"
+BASE_EXP_NAME="amp_rate_mask_trafficlike_rec_mabfx_blk5_32-3-48-3_hard_dc_lam0_5_changeloss_beta0_$(date +%Y%m%d_%H%M%S)"
+#BASE_EXP_NAME="amp_rate_mask_trafficlike_rec_istanet_blk6_$(date +%Y%m%d_%H%M%S)"
 
 use_energy_input=0
 #use_mask_0=1
 #is_rec=1
 #istanet csdc
 rec_model_method=mabf_c
-csdc_blocks=1
+csdc_blocks=5
 rec_alpha=0.5
 
 lam_miss=0.5
@@ -66,11 +67,11 @@ use_mask_0=1
 is_rec=1
 #SAMPLE_METHODS=(equidistant gaussian poisson trafficlike)
 SAMPLE_METHODS=(trafficlike)
-#SAMPLE_RATES=(0.2)
-SAMPLE_RATES=(0.05 0.1 0.2 0.5)
+SAMPLE_RATES=(0.2)
+#SAMPLE_RATES=(0.05 0.1 0.2 0.5)
 #SAMPLE_RATES=(0.0125 0.025 0.05 0.1 0.125 0.25 0.5 1)
 # 你希望使用的物理 GPU（顺序决定分组方式）
-GPU_LIST=(2)           # 例：两卡
+GPU_LIST=(5)           # 例：两卡
 #GPU_LIST=(0 1 2 3)      # 例：四卡
 # 每个任务使用几张 GPU：1=单卡；2=两卡DDP；4=四卡DDP
 GPUS_PER_TASK=1

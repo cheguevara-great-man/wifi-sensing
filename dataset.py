@@ -610,6 +610,8 @@ class WidarDigitShardDataset(Dataset):
             if self.return_rec:
                 # reconstruction mode: return masked x + mask
                 x = x_masked
+                #x = _interp_from_mask(x_masked, mask_1d, self.interpolation_method)
+
             else:
                 # classification mode: interpolate from masked samples
                 x = _interp_from_mask(x_masked, mask_1d, self.interpolation_method)
