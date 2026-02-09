@@ -50,9 +50,9 @@ DATASET_ROOT_DIR="../datasets/sense-fi"
 #BASE_EXP_NAME="amp_rate_mask_rec_fastista_fft_0_02_iter80_$(date +%Y%m%d_%H%M%S)"
 #BASE_EXP_NAME="amp_rate_mask_trafficlike_intrtp_l_rec_mabfx_fftblk_1_blk1_32-3-48-3_hard_dc_lam0_5_changeloss_beta0_20260204_110703"
 #BASE_EXP_NAME="amp_rate_mask_rec_mabf_blk3_hard_dc_lam1_changeloss_beta0_$(date +%Y%m%d_%H%M%S)"
-BASE_EXP_NAME="amp_rate_mask_trafficlike_rec_mabfx_blk5_32-3-48-3_hard_dc_lam0_5_changeloss_beta0_$(date +%Y%m%d_%H%M%S)"
+#BASE_EXP_NAME="amp_rate_mask_trafficlike_rec_mabfx_blk5_32-3-48-3_hard_dc_lam0_5_changeloss_beta0_$(date +%Y%m%d_%H%M%S)"
 #BASE_EXP_NAME="amp_rate_mask_trafficlike_rec_istanet_blk6_$(date +%Y%m%d_%H%M%S)"
-
+BASE_EXP_NAME="amp_rate_mask_trafficlike_intrtp_line_rec_mabfx_blk1_32-3-48-3_hard_dc_lam0_5_changeloss_beta0_20260205_142056"
 use_energy_input=0
 #use_mask_0=1
 #is_rec=1
@@ -69,7 +69,7 @@ is_rec=1
 # ====== 测试控制 ======
 # 1=仅测试(跳过训练)，需要提供 CKPT_PATH
 TEST_ONLY=1
-CKPT_PATH=""
+CKPT_PATH="/home/cxy/data/code/datasets/sense-fi/Widar_digit_amp/EXP/amp_rate_mask_trafficlike_intrtp_line_rec_mabfx_blk1_32-3-48-3_hard_dc_lam0_5_changeloss_beta0_20260205_142056/Model Parameters/method_trafficlike/rate_0.2/interp_linear/ResNet18/best_model.pth"
 # 1=按采样率评测；1=按BGI分桶评测
 EVAL_RATE=1
 EVAL_BGI=1
