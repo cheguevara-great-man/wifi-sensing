@@ -262,7 +262,7 @@ def test_one_epoch(model, tensor_loader, criterion, device,
         return total_loss / num_samples, total_correct / num_samples
 
 
-def _spectrogram_mean(x_tf, n_fft=256, hop=128, win=256):
+def _spectrogram_mean(x_tf, n_fft=128, hop=16, win=128):
     # x_tf: (B, T, F) -> average over F, then STFT over T
     x_mean = x_tf.mean(dim=-1)  # (B, T)
     window = torch.hann_window(win, device=x_mean.device, dtype=x_mean.dtype)
@@ -283,8 +283,15 @@ def _calculate_ssim_standard(img1, img2):
     range_val = max_val - min_val + 1e-8
     img1 = (img1 - min_val) / range_val
     img2 = (img2 - min_val) / range_val
-    return float(ssim_func(img1, img2, data_range=1.0))
-
+    h, w = img1.shape
+    min_dim = min(h, w)
+    # skimage requires odd win_size <= min_dim, and >= 3
+    if min_dim < 3:
+        return 0.0
+    win_size = 7 if min_dim >= 7 else (min_dim if (min_dim % 2 == 1) else (min_dim - 1))
+    if win_size < 3:
+        return 0.0
+    return float(ssim_func(img1, img2, data_range=1.0, win_size=win_size))
 
 def _pcc_global(x, y, eps=1e-8):
     # x, y: 1D numpy arrays
