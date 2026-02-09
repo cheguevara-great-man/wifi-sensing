@@ -65,6 +65,14 @@ lam_miss=0.5
 beta=0.0
 use_mask_0=1
 is_rec=1
+
+# ====== 测试控制 ======
+# 1=仅测试(跳过训练)，需要提供 CKPT_PATH
+TEST_ONLY=0
+CKPT_PATH=""
+# 1=按采样率评测；1=按BGI分桶评测
+EVAL_RATE=0
+EVAL_BGI=0
 #SAMPLE_METHODS=(equidistant gaussian poisson trafficlike)
 SAMPLE_METHODS=(trafficlike)
 SAMPLE_RATES=(0.2)
@@ -238,6 +246,22 @@ while ((${#PENDING_TASKS[@]} > 0)); do
       #cuda_visible=$(IFS=, ; echo ${chosen_group})
       cuda_visible="${chosen_group// /,}"   # "0 1" -> "0,1"
 
+      # eval args
+      eval_args=()
+      if [[ "${EVAL_RATE}" == "1" ]]; then
+        eval_args+=(--eval_rate)
+      fi
+      if [[ "${EVAL_BGI}" == "1" ]]; then
+        eval_args+=(--eval_bgi)
+      fi
+      if [[ "${TEST_ONLY}" == "1" ]]; then
+        if [[ -z "${CKPT_PATH}" ]]; then
+          echo "[ERROR] TEST_ONLY=1 requires CKPT_PATH"
+          exit 1
+        fi
+        eval_args+=(--test_only --ckpt_path "${CKPT_PATH}")
+      fi
+
 
       if [[ "$GPUS_PER_TASK" -eq 1 ]]; then
         CUDA_VISIBLE_DEVICES="${cuda_visible}" \
@@ -258,6 +282,7 @@ while ((${#PENDING_TASKS[@]} > 0)); do
           --global_batch_size "$GLOBAL_BATCH_SIZE" \
           --lam_miss "$lam_miss" \
           --beta "$beta" \
+          "${eval_args[@]}" \
           > "$log_file" 2>&1
       else
         CUDA_VISIBLE_DEVICES="${cuda_visible}" \
@@ -278,6 +303,7 @@ while ((${#PENDING_TASKS[@]} > 0)); do
           --global_batch_size "$GLOBAL_BATCH_SIZE" \
           --lam_miss "$lam_miss" \
           --beta "$beta" \
+          "${eval_args[@]}" \
           > "$log_file" 2>&1
       fi
       exit $?

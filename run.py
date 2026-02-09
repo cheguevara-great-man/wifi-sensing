@@ -27,6 +27,9 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.cuda.amp import autocast  # 记得加上这个 import
 from skimage.metrics import structural_similarity as ssim_func
 
+# BGI masks path (edit as needed)
+BGI_MASK_PT = "x"
+
 
 def is_dist():
     return dist.is_available() and dist.is_initialized()
@@ -406,6 +409,108 @@ def save_metrics_to_csv(filepath, history):
         # 写入所有行数据
         writer.writerows(history)
 
+
+def run_per_rate_eval(model, test_loader, criterion, device, args, ddp, criterion_rec=None):
+    # per-rate evaluation for trafficlike masks
+    if not hasattr(test_loader.dataset, "get_available_rates"):
+        return
+    rates = test_loader.dataset.get_available_rates()
+    if not rates:
+        return
+    rate_history = []
+    if is_main():
+        print("Running per-rate evaluation...")
+    for r in rates:
+        if hasattr(test_loader.dataset, "set_rate_filter"):
+            test_loader.dataset.set_rate_filter(r)
+        if hasattr(test_loader.dataset, "set_eval_subset"):
+            test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=1000 + int(r))
+        r_loss, r_acc, r_ssim, r_pcc, r_log_nmse = test_one_epoch_with_metrics(
+            model, test_loader, criterion, device,
+            is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha,
+            lam_miss=args.lam_miss, beta=args.beta
+        )
+        if is_main():
+            print(f"[rate {r}] Loss: {r_loss:.5f}, Accuracy: {r_acc:.4f}, "
+                  f"SSIM: {r_ssim:.4f}, PCC: {r_pcc:.4f}, logNMSE_miss: {r_log_nmse:.4f}")
+        rate_history.append({
+            'rate_hz': int(r),
+            'loss': r_loss,
+            'accuracy': r_acc,
+            'ssim': r_ssim,
+            'pcc': r_pcc,
+            'log_nmse_miss': r_log_nmse
+        })
+    if hasattr(test_loader.dataset, "set_rate_filter"):
+        test_loader.dataset.set_rate_filter(None)
+    if hasattr(test_loader.dataset, "set_eval_subset"):
+        test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=0)
+    if is_main():
+        rate_path = os.path.join(args.metrics_save_dir, 'test_metrics_by_rate.csv')
+        with open(rate_path, 'w', newline='') as f:
+            writer = csv.DictWriter(
+                f, fieldnames=['rate_hz', 'loss', 'accuracy', 'ssim', 'pcc', 'log_nmse_miss']
+            )
+            writer.writeheader()
+            writer.writerows(rate_history)
+        print(f"Saved per-rate metrics to: {rate_path}")
+
+
+def run_per_bgi_eval(model, test_loader, criterion, device, args, ddp, criterion_rec=None, bgi_mask_pt=None):
+    if not bgi_mask_pt:
+        return
+    if not hasattr(test_loader.dataset, "set_eval_masks"):
+        return
+    payload = torch.load(bgi_mask_pt, map_location="cpu")
+    masks = payload.get("masks", None)
+    bgi_bin = payload.get("bgi_bin", None)
+    if masks is None or bgi_bin is None:
+        raise ValueError("bgi_mask_pt must contain 'masks' and 'bgi_bin'")
+    test_loader.dataset.set_eval_masks(masks, bgi_bin=bgi_bin)
+
+    bins = ["0.0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1.0"]
+    bin_history = []
+    if is_main():
+        print("Running per-BGI-bin evaluation...")
+    for i, b in enumerate(bins):
+        if hasattr(test_loader.dataset, "set_bgi_bin_filter"):
+            test_loader.dataset.set_bgi_bin_filter(b)
+        if hasattr(test_loader.dataset, "set_eval_subset"):
+            test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=2000 + i)
+        r_loss, r_acc, r_ssim, r_pcc, r_log_nmse = test_one_epoch_with_metrics(
+            model, test_loader, criterion, device,
+            is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha,
+            lam_miss=args.lam_miss, beta=args.beta
+        )
+        if is_main():
+            print(f"[bin {b}] Loss: {r_loss:.5f}, Accuracy: {r_acc:.4f}, "
+                  f"SSIM: {r_ssim:.4f}, PCC: {r_pcc:.4f}, logNMSE_miss: {r_log_nmse:.4f}")
+        bin_history.append({
+            'bgi_bin': b,
+            'loss': r_loss,
+            'accuracy': r_acc,
+            'ssim': r_ssim,
+            'pcc': r_pcc,
+            'log_nmse_miss': r_log_nmse
+        })
+
+    if hasattr(test_loader.dataset, "set_bgi_bin_filter"):
+        test_loader.dataset.set_bgi_bin_filter(None)
+    if hasattr(test_loader.dataset, "set_eval_subset"):
+        test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=0)
+    if hasattr(test_loader.dataset, "clear_eval_masks"):
+        test_loader.dataset.clear_eval_masks()
+
+    if is_main():
+        bin_path = os.path.join(args.metrics_save_dir, 'test_metrics_by_bgi.csv')
+        with open(bin_path, 'w', newline='') as f:
+            writer = csv.DictWriter(
+                f, fieldnames=['bgi_bin', 'loss', 'accuracy', 'ssim', 'pcc', 'log_nmse_miss']
+            )
+            writer.writeheader()
+            writer.writerows(bin_history)
+        print(f"Saved per-BGI-bin metrics to: {bin_path}")
+
 def main():
     root = '../datasets/sense-fi/'
     if not os.path.isdir(root):
@@ -438,6 +543,10 @@ def main():
     parser.add_argument('--num_workers_test', type=int, default=2)
     parser.add_argument('--lam_miss', type=float, default=1.0, help='重建损失中缺失部分的权重')
     parser.add_argument('--beta', type=float, default=0.0, help='重建损失中已知部分的权重')
+    parser.add_argument('--test_only', action='store_true', help='仅测试，不训练')
+    parser.add_argument('--ckpt_path', type=str, default=None, help='测试用模型权重路径(.pth)')
+    parser.add_argument('--eval_rate', action='store_true', help='测试：按采样率分桶')
+    parser.add_argument('--eval_bgi', action='store_true', help='测试：按BGI分桶')
     args = parser.parse_args()
     # ---- DDP init (torchrun 会设置这些环境变量) ----
     ddp = ("RANK" in os.environ) and ("WORLD_SIZE" in os.environ)
@@ -479,6 +588,37 @@ def main():
     if ddp:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    # load checkpoint if provided
+    if args.ckpt_path:
+        state = torch.load(args.ckpt_path, map_location=device)
+        if ddp:
+            model.module.load_state_dict(state, strict=True)
+        else:
+            model.load_state_dict(state, strict=True)
+        if is_main():
+            print(f"Loaded checkpoint: {args.ckpt_path}")
+
+    if args.test_only:
+        if not args.ckpt_path:
+            raise ValueError("test_only requires --ckpt_path")
+        # 固定一份验证掩码子集（用于稳定对比）
+        if hasattr(test_loader.dataset, "set_rate_filter"):
+            test_loader.dataset.set_rate_filter(None)
+        if hasattr(test_loader.dataset, "set_eval_subset"):
+            test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=0)
+        test_loss, test_acc = test_one_epoch(model, test_loader, criterion, device,
+                                             is_rec=args.is_rec, criterion_rec=criterion_rec,
+                                             alpha=args.rec_alpha, lam_miss=args.lam_miss, beta=args.beta)
+        if is_main():
+            print(f"Test/Validation -> Loss: {test_loss:.5f}, Accuracy: {test_acc:.4f}")
+        if args.eval_rate:
+            run_per_rate_eval(model, test_loader, criterion, device, args, ddp, criterion_rec=criterion_rec)
+        if args.eval_bgi:
+            run_per_bgi_eval(model, test_loader, criterion, device, args, ddp, criterion_rec=criterion_rec, bgi_mask_pt=BGI_MASK_PT)
+        if ddp:
+            dist.destroy_process_group()
+        return
 
 
     # --- 目录创建 ---
@@ -599,47 +739,10 @@ def main():
         print(f"📊 正在保存测试历史到: {test_metrics_path}")
         save_metrics_to_csv(test_metrics_path, test_history)
 
-    # per-rate evaluation for trafficlike masks
-    if hasattr(test_loader.dataset, "get_available_rates"):
-        rates = test_loader.dataset.get_available_rates()
-        if rates:
-            rate_history = []
-            if is_main():
-                print("Running per-rate evaluation...")
-            for r in rates:
-                if hasattr(test_loader.dataset, "set_rate_filter"):
-                    test_loader.dataset.set_rate_filter(r)
-                if hasattr(test_loader.dataset, "set_eval_subset"):
-                    test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=1000 + int(r))
-                r_loss, r_acc, r_ssim, r_pcc, r_log_nmse = test_one_epoch_with_metrics(
-                    model, test_loader, criterion, device,
-                    is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha,
-                    lam_miss=args.lam_miss, beta=args.beta
-                )
-                if is_main():
-                    print(f"[rate {r}] Loss: {r_loss:.5f}, Accuracy: {r_acc:.4f}, "
-                          f"SSIM: {r_ssim:.4f}, PCC: {r_pcc:.4f}, logNMSE_miss: {r_log_nmse:.4f}")
-                rate_history.append({
-                    'rate_hz': int(r),
-                    'loss': r_loss,
-                    'accuracy': r_acc,
-                    'ssim': r_ssim,
-                    'pcc': r_pcc,
-                    'log_nmse_miss': r_log_nmse
-                })
-            if hasattr(test_loader.dataset, "set_rate_filter"):
-                test_loader.dataset.set_rate_filter(None)
-            if hasattr(test_loader.dataset, "set_eval_subset"):
-                test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=0)
-            if is_main():
-                rate_path = os.path.join(args.metrics_save_dir, 'test_metrics_by_rate.csv')
-                with open(rate_path, 'w', newline='') as f:
-                    writer = csv.DictWriter(
-                        f, fieldnames=['rate_hz', 'loss', 'accuracy', 'ssim', 'pcc', 'log_nmse_miss']
-                    )
-                    writer.writeheader()
-                    writer.writerows(rate_history)
-                print(f"Saved per-rate metrics to: {rate_path}")
+    if args.eval_rate:
+        run_per_rate_eval(model, test_loader, criterion, device, args, ddp, criterion_rec=criterion_rec)
+    if args.eval_bgi:
+        run_per_bgi_eval(model, test_loader, criterion, device, args, ddp, criterion_rec=criterion_rec, bgi_mask_pt=BGI_MASK_PT)
 
     #print(f"💾 所有检查点已保存在目录: {args.model_save_dir}")
     if ddp:

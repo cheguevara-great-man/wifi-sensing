@@ -459,6 +459,13 @@ class WidarDigitShardDataset(Dataset):
         self._traffic_subset = None
         self._traffic_rate_idx = None
         self._traffic_epoch = 0
+        # evaluation override (e.g., BGI bins)
+        self._eval_active = False
+        self._eval_masks = None
+        self._eval_bgi_bin = None
+        self._eval_bgi_idx = None
+        self._eval_perm = None
+        self._eval_subset = None
         if self._traffic_active:
             pt_path = traffic_train_pt if split == "train" else traffic_test_pt
             if not pt_path:
@@ -499,17 +506,31 @@ class WidarDigitShardDataset(Dataset):
             return
         n = int(n)
         if n <= 0:
-            self._traffic_subset = None
+            if self._eval_active:
+                self._eval_subset = None
+            else:
+                self._traffic_subset = None
             return
-        pool = self._traffic_rate_idx
-        if pool is None:
-            pool = np.arange(self._traffic_masks.shape[0], dtype=np.int64)
+        if self._eval_active and self._eval_masks is not None:
+            pool = self._eval_bgi_idx
+            if pool is None:
+                pool = np.arange(self._eval_masks.shape[0], dtype=np.int64)
+        else:
+            pool = self._traffic_rate_idx
+            if pool is None:
+                pool = np.arange(self._traffic_masks.shape[0], dtype=np.int64)
         if pool.size == 0:
-            self._traffic_subset = None
+            if self._eval_active:
+                self._eval_subset = None
+            else:
+                self._traffic_subset = None
             return
         rng = np.random.RandomState(int(seed) if seed is not None else self._traffic_epoch)
         replace = n > pool.size
-        self._traffic_subset = rng.choice(pool, size=n, replace=replace)
+        if self._eval_active:
+            self._eval_subset = rng.choice(pool, size=n, replace=replace)
+        else:
+            self._traffic_subset = rng.choice(pool, size=n, replace=replace)
 
     def set_rate_filter(self, rate_hz):
         if not self._traffic_active:
@@ -525,6 +546,43 @@ class WidarDigitShardDataset(Dataset):
         self._traffic_rate_idx = idx
         self._traffic_subset = None
 
+    def set_eval_masks(self, masks, bgi_bin=None):
+        if not self._traffic_active:
+            return
+        masks = np.asarray(masks)
+        if masks.ndim != 2:
+            raise ValueError(f"eval masks must be 2D (N,T), got {masks.shape}")
+        self._eval_active = True
+        self._eval_masks = masks.astype(np.uint8, copy=False)
+        if bgi_bin is not None:
+            self._eval_bgi_bin = np.asarray(bgi_bin)
+        else:
+            self._eval_bgi_bin = None
+        self._eval_bgi_idx = None
+        self._eval_perm = None
+        self._eval_subset = None
+
+    def clear_eval_masks(self):
+        self._eval_active = False
+        self._eval_masks = None
+        self._eval_bgi_bin = None
+        self._eval_bgi_idx = None
+        self._eval_perm = None
+        self._eval_subset = None
+
+    def set_bgi_bin_filter(self, bin_label):
+        if not self._eval_active:
+            return
+        if bin_label is None:
+            self._eval_bgi_idx = None
+            self._eval_subset = None
+            return
+        if self._eval_bgi_bin is None:
+            raise RuntimeError("eval bgi_bin not available")
+        idx = np.nonzero(self._eval_bgi_bin == bin_label)[0]
+        self._eval_bgi_idx = idx
+        self._eval_subset = None
+
     def get_available_rates(self):
         if (not self._traffic_active) or (self._traffic_rate is None):
             return []
@@ -534,6 +592,18 @@ class WidarDigitShardDataset(Dataset):
     def _pick_traffic_mask_index(self, idx: int) -> int:
         if self._traffic_masks is None:
             raise RuntimeError("trafficlike masks not loaded")
+        if self._eval_active and self._eval_masks is not None:
+            if self._eval_subset is not None:
+                subset = self._eval_subset
+                return int(subset[idx % subset.shape[0]])
+            if self._eval_bgi_idx is not None:
+                pool = self._eval_bgi_idx
+                if pool.size > 0:
+                    return int(pool[idx % pool.shape[0]])
+            if self._eval_perm is None:
+                rng = np.random.RandomState(None)
+                self._eval_perm = rng.permutation(self._eval_masks.shape[0])
+            return int(self._eval_perm[idx % self._eval_perm.shape[0]])
         if self._traffic_subset is not None:
             subset = self._traffic_subset
             return int(subset[idx % subset.shape[0]])
@@ -600,7 +670,10 @@ class WidarDigitShardDataset(Dataset):
 
         if self.sample_method == "trafficlike":
             mask_idx = self._pick_traffic_mask_index(idx)
-            mask_1d = self._traffic_masks[mask_idx]
+            if self._eval_active and self._eval_masks is not None:
+                mask_1d = self._eval_masks[mask_idx]
+            else:
+                mask_1d = self._traffic_masks[mask_idx]
             if mask_1d.shape[0] != x.shape[0]:
                 raise ValueError(f"traffic mask length {mask_1d.shape[0]} != T {x.shape[0]}")
             mask = mask_1d.astype(np.float32, copy=False)[:, None]
