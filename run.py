@@ -316,12 +316,46 @@ def test_one_epoch_with_metrics(model, tensor_loader, criterion, device,
     with torch.no_grad():
         for batch in tensor_loader:
             if int(is_rec) == 0:
-                inputs, labels = batch
-                inputs = inputs.to(device, dtype=torch.float32, non_blocking=True)
-                labels = labels.to(device, dtype=torch.long, non_blocking=True)
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
-                    outputs = model(inputs)
-                loss = criterion(outputs, labels)
+                if len(batch) == 4:
+                    inputs, mask, labels, inputs_gt = batch
+                    inputs = inputs.to(device, dtype=torch.float32, non_blocking=True)
+                    mask = mask.to(device, dtype=torch.float32, non_blocking=True)
+                    labels = labels.to(device, dtype=torch.long, non_blocking=True)
+                    inputs_gt = inputs_gt.to(device, dtype=torch.float32, non_blocking=True)
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                        outputs = model(inputs)
+                    loss = criterion(outputs, labels)
+
+                    # treat interpolated/ZF input as prediction for metrics
+                    x_pred = inputs
+                    x_gt = inputs_gt
+                    m = mask.to(dtype=x_pred.dtype).clamp(0.0, 1.0)
+                    miss = 1.0 - m
+                    diff = (x_pred - x_gt)
+
+                    x_pred_tf = x_pred.squeeze(1)  # (B,T,F)
+                    x_gt_tf = x_gt.squeeze(1)
+                    spec_pred = _spectrogram_mean(x_pred_tf)
+                    spec_gt = _spectrogram_mean(x_gt_tf)
+                    spec_pred_np = spec_pred.detach().cpu().numpy()
+                    spec_gt_np = spec_gt.detach().cpu().numpy()
+                    x_pred_np = x_pred_tf.detach().cpu().numpy().reshape(x_pred_tf.size(0), -1)
+                    x_gt_np = x_gt_tf.detach().cpu().numpy().reshape(x_gt_tf.size(0), -1)
+                    for i in range(x_pred_tf.size(0)):
+                        sum_ssim += _calculate_ssim_standard(spec_gt_np[i], spec_pred_np[i])
+                        sum_pcc += _pcc_global(x_gt_np[i], x_pred_np[i])
+                    num = (diff.mul(miss)).pow(2).flatten(1).sum(1)
+                    den = (x_gt.mul(miss)).pow(2).flatten(1).sum(1) + 1e-8
+                    log_nmse = 10.0 * torch.log10(num / den + 1e-8)
+                    sum_log_nmse += log_nmse.sum().item()
+                    metric_cnt += x_pred_tf.size(0)
+                else:
+                    inputs, labels = batch
+                    inputs = inputs.to(device, dtype=torch.float32, non_blocking=True)
+                    labels = labels.to(device, dtype=torch.long, non_blocking=True)
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                        outputs = model(inputs)
+                    loss = criterion(outputs, labels)
             else:
                 inputs, mask, labels, inputs_gt = batch
                 inputs = inputs.to(device, dtype=torch.float32, non_blocking=True)
@@ -612,6 +646,9 @@ def main():
     if args.test_only:
         if not args.ckpt_path:
             raise ValueError("test_only requires --ckpt_path")
+        # force dataset to return mask/gt even in is_rec=0 for metric computation
+        if hasattr(test_loader.dataset, "__dict__"):
+            test_loader.dataset.force_return_gt = True
         # 固定一份验证掩码子集（用于稳定对比）
         if hasattr(test_loader.dataset, "set_rate_filter"):
             test_loader.dataset.set_rate_filter(None)

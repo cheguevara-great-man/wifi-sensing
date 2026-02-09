@@ -716,6 +716,11 @@ class WidarDigitShardDataset(Dataset):
             x_t = torch.from_numpy(x.astype(np.float32, copy=False)).unsqueeze(0)
         y_t = torch.tensor(label, dtype=torch.long)
         if self.return_rec == 0:
+            # test_only will set force_return_gt to True to enable extra metrics
+            if getattr(self, "force_return_gt", False):
+                mask_t = torch.from_numpy(mask.astype(np.float32, copy=False)).unsqueeze(0)
+                x_gt_t = torch.from_numpy(x_original.astype(np.float32, copy=False)).unsqueeze(0)
+                return x_t, mask_t, y_t, x_gt_t
             return x_t, y_t
         mask_t = torch.from_numpy(mask.astype(np.float32, copy=False)).unsqueeze(0)
         x_gt_t = torch.from_numpy(x_original.astype(np.float32, copy=False)).unsqueeze(0)
