@@ -25,6 +25,7 @@ import csv # 1. 引入 csv 模块
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.cuda.amp import autocast  # 记得加上这个 import
+from skimage.metrics import structural_similarity as ssim_func
 
 
 def is_dist():
@@ -258,6 +259,132 @@ def test_one_epoch(model, tensor_loader, criterion, device,
         return total_loss / num_samples, total_correct / num_samples
 
 
+def _spectrogram_mean(x_tf, n_fft=256, hop=128, win=256):
+    # x_tf: (B, T, F) -> average over F, then STFT over T
+    x_mean = x_tf.mean(dim=-1)  # (B, T)
+    window = torch.hann_window(win, device=x_mean.device, dtype=x_mean.dtype)
+    spec = torch.stft(x_mean, n_fft=n_fft, hop_length=hop, win_length=win,
+                      window=window, return_complex=True)
+    spec_mag = spec.abs()  # (B, Fbins, Frames)
+    return spec_mag
+
+
+def _calculate_ssim_standard(img1, img2):
+    """
+    Standard SSIM with min-max normalization to [0,1].
+    """
+    img1 = img1.astype(np.float64)
+    img2 = img2.astype(np.float64)
+    min_val = min(img1.min(), img2.min())
+    max_val = max(img1.max(), img2.max())
+    range_val = max_val - min_val + 1e-8
+    img1 = (img1 - min_val) / range_val
+    img2 = (img2 - min_val) / range_val
+    return float(ssim_func(img1, img2, data_range=1.0))
+
+
+def _pcc_global(x, y, eps=1e-8):
+    # x, y: 1D numpy arrays
+    x = x.astype(np.float64)
+    y = y.astype(np.float64)
+    vx = x - x.mean()
+    vy = y - y.mean()
+    denom = (np.sqrt((vx * vx).sum()) * np.sqrt((vy * vy).sum())) + eps
+    return float((vx * vy).sum() / denom)
+
+
+def test_one_epoch_with_metrics(model, tensor_loader, criterion, device,
+                                is_rec: int = 0, criterion_rec=None, alpha: float = 0.5,
+                                lam_miss=2.0, beta=0.1):
+    model.eval()
+    total_loss, total_correct, num_samples = 0.0, 0, 0
+    sum_ssim = 0.0
+    sum_pcc = 0.0
+    sum_log_nmse = 0.0
+    metric_cnt = 0
+
+    with torch.no_grad():
+        for batch in tensor_loader:
+            if int(is_rec) == 0:
+                inputs, labels = batch
+                inputs = inputs.to(device, dtype=torch.float32, non_blocking=True)
+                labels = labels.to(device, dtype=torch.long, non_blocking=True)
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                    outputs = model(inputs)
+                loss = criterion(outputs, labels)
+            else:
+                inputs, mask, labels, inputs_gt = batch
+                inputs = inputs.to(device, dtype=torch.float32, non_blocking=True)
+                mask = mask.to(device, dtype=torch.float32, non_blocking=True)
+                labels = labels.to(device, dtype=torch.long, non_blocking=True)
+                inputs_gt = inputs_gt.to(device, dtype=torch.float32, non_blocking=True)
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                    outputs, x_recon = model(inputs, mask)
+                x_recon_fp32 = x_recon.float()
+                inputs_gt_fp32 = inputs_gt.float()
+                m = mask.to(dtype=x_recon_fp32.dtype).clamp(0.0, 1.0)
+                miss = 1.0 - m
+                diff = (x_recon_fp32 - inputs_gt_fp32)
+                mse_miss = (diff.mul(miss)).pow(2).sum() / (miss.sum() + 1e-8)
+                mse_known = (diff.mul(m)).pow(2).sum() / (m.sum() + 1e-8)
+                ce = criterion(outputs, labels)
+                Nall = float(m.numel())
+                miss_ratio = miss.sum() / (Nall + 1e-8)
+                known_ratio = 1.0 - miss_ratio
+                loss = ce + lam_miss * (miss_ratio * mse_miss) + beta * (known_ratio * mse_known)
+
+                # metrics: SSIM over spectrograms, PCC over waveform, log NMSE on missing points
+                # x_recon_fp32 / inputs_gt_fp32: (B,1,T,F)
+                x_rec_tf = x_recon_fp32.squeeze(1)  # (B,T,F)
+                x_gt_tf = inputs_gt_fp32.squeeze(1)  # (B,T,F)
+                spec_rec = _spectrogram_mean(x_rec_tf)
+                spec_gt = _spectrogram_mean(x_gt_tf)
+                spec_rec_np = spec_rec.detach().cpu().numpy()
+                spec_gt_np = spec_gt.detach().cpu().numpy()
+                x_rec_np = x_rec_tf.detach().cpu().numpy().reshape(x_rec_tf.size(0), -1)
+                x_gt_np = x_gt_tf.detach().cpu().numpy().reshape(x_gt_tf.size(0), -1)
+
+                # per-sample metrics
+                for i in range(x_rec_tf.size(0)):
+                    sum_ssim += _calculate_ssim_standard(spec_gt_np[i], spec_rec_np[i])
+                    sum_pcc += _pcc_global(x_gt_np[i], x_rec_np[i])
+
+                # log NMSE on missing points
+                num = (diff.mul(miss)).pow(2).flatten(1).sum(1)
+                den = (inputs_gt_fp32.mul(miss)).pow(2).flatten(1).sum(1) + 1e-8
+                log_nmse = 10.0 * torch.log10(num / den + 1e-8)
+                sum_log_nmse += log_nmse.sum().item()
+                metric_cnt += x_rec_tf.size(0)
+
+            bs = labels.size(0)
+            total_loss += loss.item() * bs
+            total_correct += (outputs.argmax(dim=1) == labels).sum().item()
+            num_samples += bs
+
+        if num_samples == 0:
+            return 0.0, 0.0, 0.0, 0.0, 0.0
+        if is_dist():
+            t = torch.tensor(
+                [total_loss, float(total_correct), float(num_samples),
+                 sum_ssim, sum_pcc, sum_log_nmse, float(metric_cnt)],
+                device=device, dtype=torch.float64
+            )
+            dist.all_reduce(t, op=dist.ReduceOp.SUM)
+            total_loss = t[0].item()
+            total_correct = t[1].item()
+            num_samples = t[2].item()
+            sum_ssim = t[3].item()
+            sum_pcc = t[4].item()
+            sum_log_nmse = t[5].item()
+            metric_cnt = t[6].item()
+
+        acc = total_correct / num_samples
+        loss_mean = total_loss / num_samples
+        if metric_cnt == 0:
+            return loss_mean, acc, 0.0, 0.0, 0.0
+        return loss_mean, acc, sum_ssim / metric_cnt, sum_pcc / metric_cnt, sum_log_nmse / metric_cnt
+
+
 def save_metrics_to_csv(filepath, history):
     """
     将性能历史记录（一个字典列表）保存到CSV文件。
@@ -484,11 +611,22 @@ def main():
                     test_loader.dataset.set_rate_filter(r)
                 if hasattr(test_loader.dataset, "set_eval_subset"):
                     test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=1000 + int(r))
-                r_loss, r_acc = test_one_epoch(model, test_loader, criterion, device,
-                                               is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha, lam_miss=args.lam_miss,beta=args.beta)
+                r_loss, r_acc, r_ssim, r_pcc, r_log_nmse = test_one_epoch_with_metrics(
+                    model, test_loader, criterion, device,
+                    is_rec=args.is_rec, criterion_rec=criterion_rec, alpha=args.rec_alpha,
+                    lam_miss=args.lam_miss, beta=args.beta
+                )
                 if is_main():
-                    print(f"[rate {r}] Loss: {r_loss:.5f}, Accuracy: {r_acc:.4f}")
-                rate_history.append({'rate_hz': int(r), 'loss': r_loss, 'accuracy': r_acc})
+                    print(f"[rate {r}] Loss: {r_loss:.5f}, Accuracy: {r_acc:.4f}, "
+                          f"SSIM: {r_ssim:.4f}, PCC: {r_pcc:.4f}, logNMSE_miss: {r_log_nmse:.4f}")
+                rate_history.append({
+                    'rate_hz': int(r),
+                    'loss': r_loss,
+                    'accuracy': r_acc,
+                    'ssim': r_ssim,
+                    'pcc': r_pcc,
+                    'log_nmse_miss': r_log_nmse
+                })
             if hasattr(test_loader.dataset, "set_rate_filter"):
                 test_loader.dataset.set_rate_filter(None)
             if hasattr(test_loader.dataset, "set_eval_subset"):
@@ -496,7 +634,9 @@ def main():
             if is_main():
                 rate_path = os.path.join(args.metrics_save_dir, 'test_metrics_by_rate.csv')
                 with open(rate_path, 'w', newline='') as f:
-                    writer = csv.DictWriter(f, fieldnames=['rate_hz', 'loss', 'accuracy'])
+                    writer = csv.DictWriter(
+                        f, fieldnames=['rate_hz', 'loss', 'accuracy', 'ssim', 'pcc', 'log_nmse_miss']
+                    )
                     writer.writeheader()
                     writer.writerows(rate_history)
                 print(f"Saved per-rate metrics to: {rate_path}")
