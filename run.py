@@ -424,6 +424,9 @@ def run_per_rate_eval(model, test_loader, criterion, device, args, ddp, criterio
     rates = test_loader.dataset.get_available_rates()
     if not rates:
         return
+    rates = [r for r in rates if (int(r) % 5 == 0)]
+    if not rates:
+        return
     rate_history = []
     if is_main():
         print("Running per-rate evaluation...")
