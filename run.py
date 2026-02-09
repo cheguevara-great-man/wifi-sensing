@@ -28,7 +28,7 @@ from torch.cuda.amp import autocast  # 记得加上这个 import
 from skimage.metrics import structural_similarity as ssim_func
 
 # BGI masks path (edit as needed)
-BGI_MASK_PT = "x"
+BGI_MASK_PT = "/home/cxy/data/code/datasets/sense-fi/Widar_digit/mask_10_90Hz_random/synthetic_masks_bgi_0p2_rate25.pt"
 
 
 def is_dist():

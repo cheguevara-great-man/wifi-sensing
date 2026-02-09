@@ -58,7 +58,7 @@ use_energy_input=0
 #is_rec=1
 #istanet csdc
 rec_model_method=mabf_c
-csdc_blocks=5
+csdc_blocks=1
 rec_alpha=0.5
 
 lam_miss=0.5
@@ -68,11 +68,11 @@ is_rec=1
 
 # ====== 测试控制 ======
 # 1=仅测试(跳过训练)，需要提供 CKPT_PATH
-TEST_ONLY=0
+TEST_ONLY=1
 CKPT_PATH=""
 # 1=按采样率评测；1=按BGI分桶评测
-EVAL_RATE=0
-EVAL_BGI=0
+EVAL_RATE=1
+EVAL_BGI=1
 #SAMPLE_METHODS=(equidistant gaussian poisson trafficlike)
 SAMPLE_METHODS=(trafficlike)
 SAMPLE_RATES=(0.2)
