@@ -688,6 +688,7 @@ class WidarDigitShardDataset(Dataset):
             else:
                 # classification mode: interpolate from masked samples
                 x = _interp_from_mask(x_masked, mask_1d, self.interpolation_method)
+                #x = x_masked
         elif self.sample_rate < 1.0 or self.use_mask_0:
             # resample_signal_data 期望 (C,T)，所以转置
             if self.return_rec:

@@ -1649,7 +1649,7 @@ def _get_widar_model_base(
         return WidarDigit_FISTARecCls(
             classifier=classifier,
             n_iter=csdc_blocks,
-            lam=0.02,
+            lam=0.015,
             prior=prior,
             hard_dc=False,
             block_win=block_win,
