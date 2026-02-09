@@ -654,9 +654,11 @@ def main():
             test_loader.dataset.set_rate_filter(None)
         if hasattr(test_loader.dataset, "set_eval_subset"):
             test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=0)
-        test_loss, test_acc = test_one_epoch(model, test_loader, criterion, device,
-                                             is_rec=args.is_rec, criterion_rec=criterion_rec,
-                                             alpha=args.rec_alpha, lam_miss=args.lam_miss, beta=args.beta)
+        test_loss, test_acc, _, _, _ = test_one_epoch_with_metrics(
+            model, test_loader, criterion, device,
+            is_rec=args.is_rec, criterion_rec=criterion_rec,
+            alpha=args.rec_alpha, lam_miss=args.lam_miss, beta=args.beta
+        )
         if is_main():
             print(f"Test/Validation -> Loss: {test_loss:.5f}, Accuracy: {test_acc:.4f}")
         if args.eval_rate:
