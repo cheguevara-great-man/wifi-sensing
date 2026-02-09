@@ -456,7 +456,7 @@ def run_per_rate_eval(model, test_loader, criterion, device, args, ddp, criterio
     if hasattr(test_loader.dataset, "set_eval_subset"):
         test_loader.dataset.set_eval_subset(len(test_loader.dataset), seed=0)
     if is_main():
-        rate_path = os.path.join(args.metrics_save_dir, 'test_metrics_by_rate.csv')
+        rate_path = os.path.join(args.metrics_save_dir, 'test_metrics_by_p_rate.csv')
         with open(rate_path, 'w', newline='') as f:
             writer = csv.DictWriter(
                 f, fieldnames=['rate_hz', 'loss', 'accuracy', 'ssim', 'pcc', 'log_nmse_miss']
