@@ -6,19 +6,22 @@ try:
     import scipy.io as sio
 except Exception as exc:
     raise ImportError("scipy is required for .mat I/O. Please install scipy.") from exc
-
+try:
+    import h5py
+except Exception:
+    h5py = None
 from Widar_digit_model import Widar_digit_amp_model
 from dataset import _interp_from_mask
 
 # ==== hardcoded inputs (edit these) ====
-MAT_CSI_PATH = "path/to/csi.mat"
+MAT_CSI_PATH = "/home/cxy/data/code/datasets/sense-fi/Widar_digit/mask_10_90Hz_random/user2-3-2-1-4-r1_mid2000_z_ds4_T500.mat"
 MAT_CSI_KEY = "csi"
 MAT_MASK_PATH = "/home/cxy/data/code/datasets/sense-fi/Widar_digit/mask_10_90Hz_random/picked_bgi5_rate25_masks.mat"
 # either provide a single mask under MAT_MASK_KEY, or (N,T) masks under MAT_MASKS_KEY
 MAT_MASK_KEY = "mask"
 MAT_MASKS_KEY = "masks"
 MAT_BGI_KEY = "bgi_bin"
-OUT_DIR = "out_single_csi"
+OUT_DIR = "/home/cxy/data/code/sensefi/reconstrction_csi"
 
 # classifier used in training (adjust if needed)
 CLASSIFIER_NAME = "ResNet18"
@@ -29,25 +32,25 @@ MODES = {
     "interp_mabf": {
         "rec_model": "mabf_c",
         "csdc_blocks": 1,
-        "ckpt": "path/to/interp_mabf.pth",
+        "ckpt": "/home/cxy/data/code/datasets/sense-fi/Widar_digit_amp/EXP/amp_rate_mask_trafficlike_intrtp_line_rec_mabfx_blk1_32-3-48-3_hard_dc_lam0_5_changeloss_beta0_20260205_142056/Model Parameters/method_trafficlike/rate_0.2/interp_linear/ResNet18/best_model.pth",
         "input": "interp",
     },
     "zf_mabf": {
         "rec_model": "mabf_c",
         "csdc_blocks": 1,
-        "ckpt": "path/to/zf_mabf.pth",
+        "ckpt": "/home/cxy/data/code/datasets/sense-fi/Widar_digit_amp/EXP/amp_rate_mask_trafficlike_norec_cls_20260204_104036/Model Parameters/method_trafficlike/rate_0.05/interp_linear/ResNet18/best_model.pth",
         "input": "zf",
     },
     "zf_fista": {
-        "rec_model": "fista",
-        "csdc_blocks": 30,
-        "ckpt": "path/to/zf_fista.pth",
+        "rec_model": "fista_fft",
+        "csdc_blocks": 50,
+        "ckpt": "/home/cxy/data/code/datasets/sense-fi/Widar_digit_amp/EXP/amp_rate_mask_fista_fft_trafficlike_20260204_230703/Model Parameters/method_trafficlike/rate_0.05/interp_linear/ResNet18/best_model.pth",
         "input": "zf",
     },
     "zf_istanet": {
         "rec_model": "istanet",
-        "csdc_blocks": 9,
-        "ckpt": "path/to/zf_istanet.pth",
+        "csdc_blocks": 3,
+        "ckpt": "/home/cxy/data/code/datasets/sense-fi/Widar_digit_amp/EXP/amp_rate_mask_trafficlike_rec_istanet_blk3_20260205_223730/Model Parameters/method_trafficlike/rate_0.2/interp_linear/ResNet18/best_model.pth",
         "input": "zf",
     },
     "interp_cls": {
@@ -63,14 +66,53 @@ MODES = {
 }
 
 # optional: run only one mode (set to key in MODES)
-ONLY_MODE = None
+ONLY_MODE = "zf_cls"
 
+
+def _transpose_matlab(arr):
+    if arr.ndim <= 1:
+        return arr
+    return np.transpose(arr, axes=tuple(reversed(range(arr.ndim))))
+
+
+def _read_h5_string(h5f, ref):
+    ds = h5f[ref]
+    data = np.array(ds).flatten()
+    try:
+        return "".join(chr(int(c)) for c in data)
+    except Exception:
+        return str(data)
 
 def _load_mat_var(path, key):
-    data = sio.loadmat(path)
-    if key not in data:
-        raise KeyError(f"{key} not found in {path}. keys={list(data.keys())}")
-    return data[key]
+    try:
+        data = sio.loadmat(path)
+        if key not in data:
+            raise KeyError(f"{key} not found in {path}. keys={list(data.keys())}")
+        return data[key]
+    except NotImplementedError:
+        if h5py is None:
+            raise ImportError("MATLAB v7.3 detected. Please install h5py to read this .mat file.")
+        with h5py.File(path, "r") as f:
+            if key not in f:
+                raise KeyError(f"{key} not found in {path}. keys={list(f.keys())}")
+            obj = f[key]
+            if isinstance(obj, h5py.Dataset):
+                arr = np.array(obj)
+                # handle cellstr (object references)
+                if arr.dtype.kind == "O":
+                    out = []
+                    for ref in arr.flatten():
+                        out.append(_read_h5_string(f, ref))
+                    return np.array(out, dtype=object)
+                return _transpose_matlab(arr)
+            # group: try to read as array of references
+            arr = np.array(obj)
+            if arr.dtype.kind == "O":
+                out = []
+                for ref in arr.flatten():
+                    out.append(_read_h5_string(f, ref))
+                return np.array(out, dtype=object)
+            return _transpose_matlab(arr)
 
 
 def _normalize_csi_shape(csi):
@@ -169,12 +211,22 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     csi = _load_mat_var(MAT_CSI_PATH, MAT_CSI_KEY)
     out_layout = _infer_output_layout(csi)
-    mask_payload = sio.loadmat(MAT_MASK_PATH)
+    try:
+        mask_payload = sio.loadmat(MAT_MASK_PATH)
+    except NotImplementedError:
+        mask_payload = {}
     if MAT_MASKS_KEY in mask_payload:
         masks = mask_payload[MAT_MASKS_KEY]
-        bgi_bin = mask_payload.get(MAT_BGI_KEY, None)
     else:
-        masks = _load_mat_var(MAT_MASK_PATH, MAT_MASK_KEY)
+        try:
+            masks = _load_mat_var(MAT_MASK_PATH, MAT_MASKS_KEY)
+        except KeyError:
+            masks = _load_mat_var(MAT_MASK_PATH, MAT_MASK_KEY)
+    try:
+        bgi_bin = mask_payload.get(MAT_BGI_KEY, None)
+        if bgi_bin is None:
+            bgi_bin = _load_mat_var(MAT_MASK_PATH, MAT_BGI_KEY)
+    except KeyError:
         bgi_bin = None
     csi_gt = _normalize_csi_shape(csi)
     T = csi_gt.shape[0]
