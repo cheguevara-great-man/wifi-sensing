@@ -53,6 +53,31 @@ MODES = {
         "ckpt": "/home/cxy/data/code/datasets/sense-fi/Widar_digit_amp/EXP/amp_rate_mask_trafficlike_rec_istanet_blk3_20260205_223730/Model Parameters/method_trafficlike/rate_0.2/interp_linear/ResNet18/best_model.pth",
         "input": "zf",
     },
+    "interp_mabf_time": {
+        "rec_model": "mabf_c",
+        "csdc_blocks": 1,
+        "ckpt": "/home/cxy/data/code/datasets/sense-fi/Widar_digit_amp/EXP/amp_rate_mask_trafficlike_rec_mabfx_fusion_onlytime_blk_1_32-3-48-3_hard_dc_lam0_5_changeloss_beta0_20260210_114438/Model Parameters/method_trafficlike/rate_0.2/interp_linear/ResNet18/best_model.pth",
+        "input": "interp",
+    },
+    "interp_mabf_freq": {
+        "rec_model": "mabf_c",
+        "csdc_blocks": 1,
+        "ckpt": "/home/cxy/data/code/datasets/sense-fi/Widar_digit_amp/EXP/amp_rate_mask_trafficlike_rec_mabfx_fusion_onlyfreq_blk_1_32-3-48-3_hard_dc_lam0_5_changeloss_beta0_20260210_114109/Model Parameters/method_trafficlike/rate_0.2/interp_linear/ResNet18/best_model.pth",
+        "input": "interp",
+    },
+    
+    "zf_mabf_time": {
+        "rec_model": "mabf_c",
+        "csdc_blocks": 1,
+        "ckpt": "/path/to/interp_mabf_time.pth",
+        "input": "zf",
+    },
+    "zf_mabf_freq": {
+        "rec_model": "mabf_c",
+        "csdc_blocks": 1,
+        "ckpt": "/path/to/interp_mabf_freq.pth",
+        "input": "zf",
+    },
     "interp_cls": {
         "rec_model": None,
         "ckpt": None,
